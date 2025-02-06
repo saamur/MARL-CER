@@ -5,6 +5,7 @@ from ernestogym.ernesto.energy_storage.battery_models.soc import SOCModelState, 
 from flax import struct
 from functools import partial
 import jax
+import jax.numpy as jnp
 
 
 @struct.dataclass
@@ -61,6 +62,8 @@ class BatteryEnergyStorageSystem:
                                electrical_state=electrical_state,
                                thermal_state=thermal_state,
                                soc_state=soc_state)
+
+        init_state = jax.tree.map(lambda leaf: jnp.array(leaf), init_state)
 
         return init_state
 

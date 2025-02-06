@@ -6,6 +6,7 @@ from ernestogym.ernesto.energy_storage.battery_models.bolun import BolunAgingMod
 from flax import struct
 from functools import partial
 import jax
+import jax.numpy as jnp
 
 
 @struct.dataclass
@@ -64,6 +65,8 @@ class BatteryEnergyStorageSystem:
                                thermal_state=thermal_state,
                                soc_state=soc_state,
                                aging_state=aging_state)
+
+        init_state = jax.tree.map(lambda leaf: jnp.array(leaf), init_state)
 
         return init_state
 
