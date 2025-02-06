@@ -15,14 +15,10 @@ class SOCModelState:
 
 class SOCModel:
 
-    # @classmethod
+    @classmethod
     # @partial(jax.jit, static_argnums=[0])
-    # def get_init_state(cls, components: Dict, temp, heat):
-    #     return SOCModel(components['c_term'],
-    #                              components['r_cond'],
-    #                              components['r_conv'],
-    #                              components['dv_dT'],
-    #                              temp, heat)
+    def get_init_state(cls, soc, soc_max, soc_min):
+        return SOCModelState(soc=soc, soc_max=soc_max, soc_min=soc_min)
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])

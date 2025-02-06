@@ -14,11 +14,6 @@ class ThermalModelState:
 
     temp: float
     heat: float
-    # soc?
-
-    # v: float
-    # i: float
-    # v_rc: float
 
 class R2CThermalModel:
 
@@ -28,13 +23,14 @@ class R2CThermalModel:
     #     self.ocv_potential = components['ocv_potential']
 
     @classmethod
-    @partial(jax.jit, static_argnums=[0])
-    def get_init_state(cls, components: Dict, temp, heat):
-        return ThermalModelState(components['c_term'],
-                                 components['r_cond'],
-                                 components['r_conv'],
-                                 components['dv_dT'],
-                                 temp, heat)
+    # @partial(jax.jit, static_argnums=[0])
+    def get_init_state(cls, components_setting: Dict, temp):
+        return ThermalModelState(c_term=components_setting['c_term']['scalar'],
+                                 r_cond=components_setting['r_cond']['scalar'],
+                                 r_conv=components_setting['r_conv']['scalar'],
+                                 dv_dT=components_setting['dv_dT']['scalar'],
+                                 temp=temp,
+                                 heat=0.)
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])

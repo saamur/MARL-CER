@@ -35,7 +35,7 @@ class Streamflow:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0, 2])
-    def get_init_state(cls, init_soc=0, expected_cycle_num=3000):
+    def get_init_state(cls, init_soc=1., expected_cycle_num=3000):
         init_state = StreamflowState(is_init=True,
                                      cycle_k=-1,
                                      last_soc_value=init_soc,
@@ -152,7 +152,7 @@ class Streamflow:
                                                                                      when_any_exp_end_ind,
                                                                                      when_no_exp_end_ind, state,
                                                                                      aux_ind),
-                                                 lambda state, aux_ind: state.is_valid, state.cycle_k,
+                                                 lambda state, aux_ind: (state.is_valid, state.cycle_k),
                                                  state, aux_ind)
         # new_is_valid, new_cycle_k = jax.lax.cond(expected_end_indices.any(), when_any_exp_end_ind, when_no_exp_end_ind, state, aux_ind)
 
@@ -185,11 +185,11 @@ class Streamflow:
                                   indices_range: jnp.array):
         indices = jax.lax.cond(direction,
                                lambda min_max_vals, last_value, value: jnp.logical_and(
-                                   min_max_vals.at[:, 1] > last_value,
-                                   min_max_vals.at[:, 1] < value),
+                                   min_max_vals[:, 1] > last_value,
+                                   min_max_vals[:, 1] < value),
                                lambda min_max_vals, last_value, value: jnp.logical_and(
-                                   min_max_vals.at[:, 0] < last_value,
-                                   min_max_vals.at[:, 0] > value),
+                                   min_max_vals[:, 0] < last_value,
+                                   min_max_vals[:, 0] > value),
                                min_max_vals, last_value, value)
 
         return jnp.logical_and(indices, indices_range)
@@ -223,7 +223,7 @@ class AgingModelState:
     soh: float
     soc_mean: float
     temp_battery_mean: float
-    n_seps: int
+    n_steps: int
 
     stream_flow_state: StreamflowState
 
@@ -240,15 +240,37 @@ class AgingModelState:
 class BolunAgingModel:
 
     @classmethod
-    @partial(jax.jit, static_argnums=[0])
-    def get_init_state(cls, components: Dict, temp, heat):
-        return AgingModelState()        #TODO
+    # @partial(jax.jit, static_argnums=[0])
+    def get_init_state(cls, components_setting: Dict, stress_models: Dict, temp):
+
+        stream_flow_state = Streamflow.get_init_state()
+
+        time_stress_model = TimeStressModel(k_t=stress_models['time']['k_t'])
+        soc_stress_model = SocStressModel(k_soc=stress_models['soc']['k_soc'],
+                                          soc_ref=stress_models['soc']['soc_ref'])
+        temp_stress_model = TempStressModel(k_temp=stress_models['temperature']['k_temp'])
+        dod_bolun_stress_model = DodBolunStressModel(k_delta1=stress_models['dod_bolun']['k_delta1'],
+                                                     k_delta2=stress_models['dod_bolun']['k_delta2'],
+                                                     k_delta3=stress_models['dod_bolun']['k_delta3'])
+
+        return AgingModelState(init_soh=1.,
+                               soh=1.,
+                               soc_mean=1,
+                               temp_battery_mean=temp,
+                               n_steps=0,
+                               stream_flow_state=stream_flow_state,
+                               time_stress_model=time_stress_model,
+                               soc_stress_model=soc_stress_model,
+                               temp_stress_model=temp_stress_model,
+                               dod_bolun_stress_model=dod_bolun_stress_model,
+                               alpha_sei=components_setting['SEI']['alpha_sei'],
+                               beta_sei=components_setting['SEI']['beta_sei'])
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
     def compute_soh(cls, state: AgingModelState, temp_battery, temp_ambient, soc, elapsed_time, is_charging:bool):     #TODO t_ref è temperatura ambiente o un'altra roba?
 
-        new_n_steps = state.n_seps + 1
+        new_n_steps = state.n_steps + 1
         new_temp_battery_mean = state.temp_battery_mean + (temp_battery - state.temp_battery_mean) / new_n_steps
         new_soc_mean = state.soc_mean + (soc - state.soc_mean) / new_n_steps
 
@@ -293,7 +315,7 @@ class BolunAgingModel:
         new_state = state.replace(n_steps=new_n_steps,
                                   temp_battery_mean=new_temp_battery_mean,
                                   soc_mean=new_soc_mean,
-                                  new_stream_flow_state=new_stream_flow_state,
+                                  stream_flow_state=new_stream_flow_state,
                                   soh=new_soh)
 
         return new_state, new_soh
