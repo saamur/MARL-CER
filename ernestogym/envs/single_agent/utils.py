@@ -4,8 +4,8 @@ generates the parameters dict for `EnergyStorageEnv`.
 """
 import yaml
 from pint import UnitRegistry
-from ernestogym.ernesto.utils import read_csv
-from ernestogym.ernesto import read_yaml, validate_yaml_parameters
+from ernestogym.ernesto_jax.utils import read_csv
+from ernestogym.ernesto_jax import read_yaml, validate_yaml_parameters
 
 BATTERY_OPTIONS = "ernestogym/ernesto_jax/data/battery/cell.yaml"
 INPUT_VAR = 'power'     # 'power'/'current'/'voltage'

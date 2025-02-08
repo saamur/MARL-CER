@@ -1,6 +1,6 @@
-from ernestogym.ernesto.energy_storage.battery_models.electrical_fading import TheveninFadingModel, ElectricalModelFadingState
-from ernestogym.ernesto.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
-from ernestogym.ernesto.energy_storage.battery_models.soc import SOCModelState, SOCModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.electrical_fading import TheveninFadingModel, ElectricalModelFadingState
+from ernestogym.ernesto_jax.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.soc import SOCModelState, SOCModel
 
 from flax import struct
 from functools import partial

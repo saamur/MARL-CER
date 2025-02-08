@@ -1,7 +1,7 @@
-from ernestogym.ernesto.energy_storage.battery_models.electrical import ElectricalModelState, TheveninModel
-from ernestogym.ernesto.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
-from ernestogym.ernesto.energy_storage.battery_models.soc import SOCModelState, SOCModel
-from ernestogym.ernesto.energy_storage.battery_models.bolun_streamflow import BolunStreamflowModel, BolunStreamflowState
+from ernestogym.ernesto_jax.energy_storage.battery_models.electrical import ElectricalModelState, TheveninModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.soc import SOCModelState, SOCModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.bolun_streamflow import BolunStreamflowModel, BolunStreamflowState
 
 from flax import struct
 from functools import partial
