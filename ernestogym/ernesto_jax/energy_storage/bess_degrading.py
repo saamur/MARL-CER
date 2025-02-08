@@ -1,7 +1,7 @@
 from ernestogym.ernesto.energy_storage.battery_models.electrical import ElectricalModelState, TheveninModel
 from ernestogym.ernesto.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
 from ernestogym.ernesto.energy_storage.battery_models.soc import SOCModelState, SOCModel
-from ernestogym.ernesto.energy_storage.battery_models.bolun import BolunAgingModel, AgingModelState
+from ernestogym.ernesto.energy_storage.battery_models.bolun_streamflow import BolunStreamflowModel, BolunStreamflowState
 
 from flax import struct
 from functools import partial
@@ -21,7 +21,7 @@ class BessState:
     electrical_state: ElectricalModelState
     thermal_state: ThermalModelState
     soc_state: SOCModelState
-    aging_state: AgingModelState
+    aging_state: BolunStreamflowState
 
 class BatteryEnergyStorageSystem:
 
@@ -89,9 +89,9 @@ class BatteryEnergyStorageSystem:
 
             elif model_config['type'] == 'aging':
                 assert model_config['class_name'] == 'BolunModel'
-                aging_state = BolunAgingModel.get_init_state(components_setting=model_config['components'],
-                                                             stress_models=model_config['stress_models'],
-                                                             temp=temp_battery)
+                aging_state = BolunStreamflowModel.get_init_state(components_setting=model_config['components'],
+                                                                  stress_models=model_config['stress_models'],
+                                                                  temp=temp_battery)
 
         return electrical_state, thermal_state, aging_state
 
@@ -109,12 +109,14 @@ class BatteryEnergyStorageSystem:
         old_soc = state.soc_state.soc
         new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, state.c_max)
 
-        new_aging_state, curr_soh = BolunAgingModel.compute_soh(state.aging_state, curr_temp, state.temp_ambient, curr_soc, state.elapsed_time, curr_soc > old_soc)
+        new_aging_state, curr_soh = BolunStreamflowModel.compute_soh(state.aging_state, curr_temp, state.temp_ambient, curr_soc, state.elapsed_time, curr_soc > old_soc)
 
+        new_c_max = curr_soh * state.nominal_capacity
 
         new_state = state.replace(electrical_state=new_electrical_state,
                                   thermal_state=new_thermal_state,
                                   soc_state=new_soc_state,
-                                  aging_state=new_aging_state)
+                                  aging_state=new_aging_state,
+                                  c_max=new_c_max)
 
         return new_state

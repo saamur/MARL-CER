@@ -7,12 +7,12 @@ from pint import UnitRegistry
 from ernestogym.ernesto.utils import read_csv
 from ernestogym.ernesto import read_yaml, validate_yaml_parameters
 
-BATTERY_OPTIONS = "ernestogym/ernesto/data/battery/cell.yaml"
+BATTERY_OPTIONS = "ernestogym/ernesto_jax/data/battery/cell.yaml"
 INPUT_VAR = 'power'     # 'power'/'current'/'voltage'
 
-ECM = "ernestogym/ernesto/data/battery/models/electrical/thevenin_cell.yaml"
-R2C_THERMAL = "ernestogym/ernesto/data/battery/models/thermal/r2c_thermal_cell.yaml"
-BOLUN_MODEL = "ernestogym/ernesto/data/battery/models/aging/bolun_cell.yaml"
+ECM = "ernestogym/ernesto_jax/data/battery/models/electrical/thevenin_cell.yaml"
+R2C_THERMAL = "ernestogym/ernesto_jax/data/battery/models/thermal/r2c_thermal_cell.yaml"
+BOLUN_MODEL = "ernestogym/ernesto_jax/data/battery/models/aging/bolun_cell.yaml"
 
 WORLD = "ernestogym/envs/single_agent/world_fading.yaml"
 

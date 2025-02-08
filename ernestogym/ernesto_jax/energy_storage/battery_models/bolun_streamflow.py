@@ -217,7 +217,7 @@ class DodBolunStressModel:
 
 
 @struct.dataclass
-class AgingModelState:
+class BolunStreamflowState:
 
     init_soh:float
     soh: float
@@ -237,7 +237,7 @@ class AgingModelState:
 
 
 
-class BolunAgingModel:
+class BolunStreamflowModel:
 
     @classmethod
     # @partial(jax.jit, static_argnums=[0])
@@ -253,22 +253,22 @@ class BolunAgingModel:
                                                      k_delta2=stress_models['dod_bolun']['k_delta2'],
                                                      k_delta3=stress_models['dod_bolun']['k_delta3'])
 
-        return AgingModelState(init_soh=1.,
-                               soh=1.,
-                               soc_mean=1,
-                               temp_battery_mean=temp,
-                               n_steps=0,
-                               stream_flow_state=stream_flow_state,
-                               time_stress_model=time_stress_model,
-                               soc_stress_model=soc_stress_model,
-                               temp_stress_model=temp_stress_model,
-                               dod_bolun_stress_model=dod_bolun_stress_model,
-                               alpha_sei=components_setting['SEI']['alpha_sei'],
-                               beta_sei=components_setting['SEI']['beta_sei'])
+        return BolunStreamflowState(init_soh=1.,
+                                    soh=1.,
+                                    soc_mean=1,
+                                    temp_battery_mean=temp,
+                                    n_steps=0,
+                                    stream_flow_state=stream_flow_state,
+                                    time_stress_model=time_stress_model,
+                                    soc_stress_model=soc_stress_model,
+                                    temp_stress_model=temp_stress_model,
+                                    dod_bolun_stress_model=dod_bolun_stress_model,
+                                    alpha_sei=components_setting['SEI']['alpha_sei'],
+                                    beta_sei=components_setting['SEI']['beta_sei'])
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def compute_soh(cls, state: AgingModelState, temp_battery, temp_ambient, soc, elapsed_time, is_charging:bool):     #TODO t_ref è temperatura ambiente o un'altra roba?
+    def compute_soh(cls, state: BolunStreamflowState, temp_battery, temp_ambient, soc, elapsed_time, is_charging:bool):     #TODO t_ref è temperatura ambiente o un'altra roba?
 
         new_n_steps = state.n_steps + 1
         new_temp_battery_mean = state.temp_battery_mean + (temp_battery - state.temp_battery_mean) / new_n_steps
@@ -322,7 +322,7 @@ class BolunAgingModel:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def compute_cyclic_aging(cls, state: AgingModelState, mask, temp_ambient, cycle_type, cycle_dod, avg_cycle_temp, avg_cycle_soc):
+    def compute_cyclic_aging(cls, state: BolunStreamflowState, mask, temp_ambient, cycle_type, cycle_dod, avg_cycle_temp, avg_cycle_soc):
         cyclic_aging = (cycle_type *
                         dod_bolun_stress(cycle_dod, state.dod_bolun_stress_model.k_delta1, state.dod_bolun_stress_model.k_delta2, state.dod_bolun_stress_model.k_delta3) *
                         temperature_stress(state.temp_stress_model.k_temp, avg_cycle_temp, temp_ambient) *

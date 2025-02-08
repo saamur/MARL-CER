@@ -1,5 +1,5 @@
 demand:
-  path: "ernestogym/ernesto/data/demand/dataset.csv"
+  path: "ernestogym/ernesto_jax/data/demand/dataset.csv"
   timestep: 60 # seconds
   test_profiles: # column label to use to test the agent
     - "70"
@@ -8,12 +8,12 @@ demand:
   data_usage: "end" # "circular/end"
 
 generation:
-  path: "ernestogym/ernesto/data/generation/pv_dataset.csv"
+  path: "ernestogym/ernesto_jax/data/generation/pv_dataset.csv"
   timestep: 60 # seconds
   data_usage: "end" # "circular/end"
 
 market:
-  path: "ernestogym/ernesto/data/market/ita2010wh.csv"
+  path: "ernestogym/ernesto_jax/data/market/ita2010wh.csv"
   timestep: 3600 # seconds
   data_usage: "end" # "circular/end"
 
