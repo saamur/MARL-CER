@@ -22,6 +22,7 @@ class BessState:
     thermal_state: ThermalModelState
     soc_state: SOCModelState
     aging_state: BolunDropflowState
+    soh: float
     iter: int
     check_soh_every: int
 
@@ -44,7 +45,7 @@ class BatteryEnergyStorageSystem:
         # nominal_voltage ?
         # nominal_cost ?
         # v_max, v_min ?
-        temp_ambient = battery_options['params']['temp_ambient']
+        temp_ambient = battery_options['init']['temp_ambient']
         # soc_min soc_max
         sign_convention = battery_options['sign_convention']
         # _reset_soc_every ?
@@ -58,7 +59,7 @@ class BatteryEnergyStorageSystem:
 
         temp_battery = battery_options['init']['temperature']
 
-        electrical_state, thermal_state, aging_state = cls._build_models(models_config, sign_convention, temp_battery)
+        electrical_state, thermal_state, aging_state = cls._build_models(models_config, battery_options['init'], sign_convention, temp_battery)
 
         init_state = BessState(nominal_capacity=nominal_capacity,
                                c_max=c_max,
@@ -68,6 +69,7 @@ class BatteryEnergyStorageSystem:
                                thermal_state=thermal_state,
                                soc_state=soc_state,
                                aging_state=aging_state,
+                               soh=1.,
                                iter=0,
                                check_soh_every=check_soh_every)
 
@@ -76,7 +78,7 @@ class BatteryEnergyStorageSystem:
         return init_state
 
     @classmethod
-    def _build_models(cls, models_settings, sign_convention, temp_battery):
+    def _build_models(cls, models_settings, inits, sign_convention, temp_battery):
         electrical_state = None
         thermal_state = None
         aging_state = None
@@ -86,6 +88,7 @@ class BatteryEnergyStorageSystem:
                 assert model_config['class_name'] == 'TheveninModel'
                 assert model_config['use_fading'] == False
                 electrical_state = TheveninModel.get_init_state(components=model_config['components'],
+                                                                inits=inits,
                                                                 sign_convention=sign_convention)
 
             elif model_config['type'] == 'thermal':
@@ -93,7 +96,7 @@ class BatteryEnergyStorageSystem:
                 thermal_state = R2CThermalModel.get_init_state(model_config['components'], temp_battery)
 
             elif model_config['type'] == 'aging':
-                assert model_config['class_name'] == 'BolunModel'
+                assert model_config['class_name'] == 'BolunDropflowModel'
                 #TODO AGGIUNGERE LIMITI ARRAY
                 aging_state = BolunDropflowModel.get_init_state(components_setting=model_config['components'],
                                                                 stress_models=model_config['stress_models'])
@@ -106,13 +109,11 @@ class BatteryEnergyStorageSystem:
     def step(cls, state: BessState, i:float, dt:float):
         new_electrical_state, v_out, _ = TheveninModel.step_current_driven(state.electrical_state, i, dt)
 
-        dissipated_heat = TheveninModel.compute_generated_heat(state.electrical_state)
+        new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, state.nominal_capacity)
 
-        #todo da aggiornare anche nel soc_model (l'ho fatto in modo che non serva)
+        dissipated_heat = TheveninModel.compute_generated_heat(new_electrical_state)
 
         new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=state.temp_ambient, dt=dt)
-
-        new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, state.c_max)
 
         new_aging_state, curr_soh = BolunDropflowModel.compute_soh(state.aging_state, curr_temp, state.temp_ambient, curr_soc, state.elapsed_time, state.iter % state.check_soh_every == 0)
 
@@ -122,6 +123,7 @@ class BatteryEnergyStorageSystem:
                                   thermal_state=new_thermal_state,
                                   soc_state=new_soc_state,
                                   aging_state=new_aging_state,
-                                  c_max=new_c_max)
+                                  c_max=new_c_max,
+                                  iter=state.iter+1)
 
         return new_state

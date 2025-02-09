@@ -1,7 +1,6 @@
 from typing import Dict
 
 from flax import struct
-from flax.core.frozen_dict import freeze
 from functools import partial
 import jax
 
@@ -16,11 +15,6 @@ class ThermalModelState:
     heat: float
 
 class R2CThermalModel:
-
-    # def __init__(self, components: Dict):
-    #     self.r0 = components['r0']
-    #     self.rc = freeze(components['rc'])
-    #     self.ocv_potential = components['ocv_potential']
 
     @classmethod
     # @partial(jax.jit, static_argnums=[0])

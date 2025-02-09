@@ -1,7 +1,4 @@
-from typing import Dict
-
 from flax import struct
-from flax.core.frozen_dict import freeze
 from functools import partial
 import jax
 import jax.numpy as jnp
@@ -113,7 +110,7 @@ class Dropflow:
                                                              reversals_length=state.reversals_length + 1),
                                  state)
 
-        #todo check len revs
+        #todo check len revs (dovrebbe non servire)
 
         abs_diffs = jnp.abs(jnp.diff(new_state.reversals_xs))       # n - 1
 
@@ -164,22 +161,3 @@ class Dropflow:
                                       reversals_length=new_reversals_length)
 
         return new_state, rngs, means, counts, i_start, i_end
-
-
-
-        # return new_state, abs_diffs, abs_diffs, abs_diffs, jnp.zeros(abs_diffs, dtype=int), jnp.zeros(abs_diffs, dtype=int)
-
-
-
-        # TODO OLTRE A COMPATTARE I VETTORI DI REVERSALS
-
-        # abs_diffs = jnp.abs(jnp.diff(new_reversals_xs))
-        #
-        # diffs_prev = abs_diffs[:-1]
-        # diffs_next = abs_diffs[1:]
-        #
-        # maybe_cycle = diffs_next >= diffs_prev
-        #
-        # # first_true = jnp.argmax(maybe_cycle)
-        # #
-        # # half_cycles = jnp.where()

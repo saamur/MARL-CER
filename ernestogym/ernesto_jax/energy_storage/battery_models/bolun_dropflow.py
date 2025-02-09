@@ -1,7 +1,6 @@
 from typing import Dict
 
 from flax import struct
-from flax.core.frozen_dict import freeze
 from functools import partial
 import jax
 import jax.numpy as jnp

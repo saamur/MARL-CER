@@ -36,7 +36,7 @@ components:
         #scalar: 10
 
     dv_dT:
-        selected_type: lookup
+        selected_type: scalar
         scalar: 0.1
         lookup:
             inputs:

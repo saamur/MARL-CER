@@ -20,6 +20,7 @@ class BessState:
     electrical_state: ElectricalModelFadingState
     thermal_state: ThermalModelState
     soc_state: SOCModelState
+    soh: float
 
 class BatteryEnergyStorageSystem:
 
@@ -39,7 +40,7 @@ class BatteryEnergyStorageSystem:
         # nominal_voltage ?
         # nominal_cost ?
         # v_max, v_min ?
-        temp_ambient = battery_options['params']['temp_ambient']
+        temp_ambient = battery_options['init']['temp_ambient']
         # soc_min soc_max
         sign_convention = battery_options['sign_convention']
         # _reset_soc_every ?
@@ -53,7 +54,7 @@ class BatteryEnergyStorageSystem:
 
         temp_battery = battery_options['init']['temperature']
 
-        electrical_state, thermal_state = cls._build_models(models_config, sign_convention, temp_battery)
+        electrical_state, thermal_state = cls._build_models(models_config, battery_options['init'], sign_convention, temp_battery)
 
         init_state = BessState(nominal_capacity=nominal_capacity,
                                c_max=c_max,
@@ -61,7 +62,8 @@ class BatteryEnergyStorageSystem:
                                elapsed_time=0.,
                                electrical_state=electrical_state,
                                thermal_state=thermal_state,
-                               soc_state=soc_state)
+                               soc_state=soc_state,
+                               soh=1.)
 
         init_state = jax.tree.map(lambda leaf: jnp.array(leaf), init_state)
 
@@ -69,7 +71,7 @@ class BatteryEnergyStorageSystem:
 
 
     @classmethod
-    def _build_models(cls, models_settings, sign_convention, temp):
+    def _build_models(cls, models_settings, inits, sign_convention, temp):
         electrical_state = None
         thermal_state = None
 
@@ -80,7 +82,8 @@ class BatteryEnergyStorageSystem:
                 electrical_state = TheveninFadingModel.get_init_state(alpha_fading=model_config['alpha_fading'],
                                                                       beta_fading=model_config['beta_fading'],
                                                                       components=model_config['components'],
-                                                                      sign_convention=sign_convention)
+                                                                      sign_convention=sign_convention,
+                                                                      inits=inits)
 
             elif model_config['type'] == 'thermal':
                 assert model_config['class_name'] == 'R2CThermal'
@@ -94,20 +97,20 @@ class BatteryEnergyStorageSystem:
     @partial(jax.jit, static_argnums=[0])
     def step(cls, state: BessState, i:float, dt:float):
         new_electrical_state, v_out, _ = TheveninFadingModel.step_current_driven(state.electrical_state, i, dt)
+        new_electrical_state, new_c_max = TheveninFadingModel.compute_parameter_fading(new_electrical_state, state.nominal_capacity)
 
-        dissipated_heat = TheveninFadingModel.compute_generated_heat(state.electrical_state)
+        new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, new_c_max)
 
-        new_electrical_state, new_c_max = TheveninFadingModel.compute_parameter_fading(new_electrical_state, state.c_max)
-
-        #todo da aggiornare anche nel soc_model (l'ho fatto in modo che non serva)
+        dissipated_heat = TheveninFadingModel.compute_generated_heat(new_electrical_state)
 
         new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=state.temp_ambient, dt=dt)
 
-        new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, new_c_max)
+        new_soh = new_c_max / state.nominal_capacity
 
         new_state = state.replace(c_max=new_c_max,
                                   electrical_state=new_electrical_state,
                                   thermal_state=new_thermal_state,
-                                  soc_state=new_soc_state)
+                                  soc_state=new_soc_state,
+                                  soh=new_soh)
 
         return new_state

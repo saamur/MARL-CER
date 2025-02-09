@@ -29,15 +29,11 @@ class ElectricalModelState:
 # with fading
 class TheveninModel:
 
-    # def __init__(self, components: Dict):
-    #     self.r0 = components['r0']
-    #     self.rc = freeze(components['rc'])
-    #     self.ocv_potential = components['ocv_potential']
-
     @classmethod
     # @partial(jax.jit, static_argnums=[0])
     def get_init_state(cls,
                        components: Dict,
+                       inits: Dict,
                        sign_convention: str):
 
         assert components['r0']['selected_type'] == 'scalar'
@@ -59,8 +55,8 @@ class TheveninModel:
                                     rc=rc,
                                     ocv_potential=ocv_potential,
                                     is_active= sign_convention == 'active',
-                                    v=0.,
-                                    i=0.,
+                                    v=inits['voltage'],
+                                    i=inits['current'],
                                     v_rc=0.)       #TODO v_rc?
 
     @classmethod
