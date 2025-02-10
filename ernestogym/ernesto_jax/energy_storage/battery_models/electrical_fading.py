@@ -5,29 +5,13 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-@struct.dataclass
-class RCState:
-    resistance_nominal: float
-
-    resistance: float
-    capacity: float
-    i_resistance: float
+from ernestogym.ernesto_jax.energy_storage.battery_models.electrical import RCState, ElectricalModelState
 
 @struct.dataclass
-class ElectricalModelFadingState:
+class ElectricalModelFadingState(ElectricalModelState):
     alpha_fading: float
     beta_fading:float
 
-    r0_nominal: float
-    r0: float
-
-    rc: RCState
-    ocv_potential: float
-    is_active: bool
-
-    v: float
-    i: float
-    v_rc: float
     q: float
 
 # with fading
@@ -66,7 +50,8 @@ class TheveninFadingModel:
                                           v=inits['voltage'],
                                           i=inits['current'],
                                           v_rc=0.,
-                                          q=0.)       #TODO v_rc?
+                                          q=0.,
+                                          p=0.)       #TODO v_rc?
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
@@ -89,8 +74,12 @@ class TheveninFadingModel:
 
         new_q = state.q + jnp.abs(i_load) * dt /3600
 
+        power = v * i_load
 
-        new_state = state.replace(v=v, i=i_load, v_rc=v_rc, q=new_q, rc=state.rc.replace(i_resistance=i_r1))
+        power = jnp.where(state.is_active, power, -power)
+
+
+        new_state = state.replace(v=v, i=i_load, v_rc=v_rc, q=new_q, rc=state.rc.replace(i_resistance=i_r1), p=power)
 
         return new_state, v, i_load
 

@@ -35,7 +35,7 @@ class BolunDropflowState:
     soh: float
     soc_mean: float
     temp_battery_mean: float
-    temp_history: jnp.ndarray
+    cum_sum_temp_history: jnp.ndarray
     n_steps: int
 
     dropflow_state: DropflowState
@@ -73,7 +73,7 @@ class BolunDropflowModel:
                                   soh=1.,
                                   soc_mean=1.,
                                   temp_battery_mean=0.,
-                                  temp_history=jnp.zeros(max_length_history),
+                                  cum_sum_temp_history=jnp.zeros(max_length_history+1),
                                   n_steps=0,
                                   dropflow_state=dropflow_state,
                                   f_cyc=0.,
@@ -91,13 +91,13 @@ class BolunDropflowModel:
 
         new_dropflow_state = Dropflow.add_point(state.dropflow_state, soc)
 
-        new_temp_history = state.temp_history.at[state.n_steps].set(temp_battery)
+        new_cum_sum_temp_history = state.cum_sum_temp_history.at[state.n_steps+1].set(state.cum_sum_temp_history[state.n_steps] + temp_battery)
         new_n_steps = state.n_steps + 1
         new_temp_battery_mean = state.temp_battery_mean + (temp_battery - state.temp_battery_mean) / new_n_steps
         new_soc_mean = state.soc_mean + (soc - state.soc_mean) / new_n_steps
 
         new_state = state.replace(dropflow_state=new_dropflow_state,
-                                  temp_history=new_temp_history,
+                                  cum_sum_temp_history=new_cum_sum_temp_history,
                                   n_steps=new_n_steps,
                                   temp_battery_mean=new_temp_battery_mean,
                                   soc_mean=new_soc_mean)
@@ -110,11 +110,12 @@ class BolunDropflowModel:
 
             new_dropflow_state, rngs, soc_means, counts, i_start, i_end = Dropflow.extract_new_cycles(state.dropflow_state)
 
-            length = len(state.temp_history)
-            indexes = jnp.arange(length)
-            mask = jnp.logical_and(indexes[:, None] >= i_start[None, :], indexes[:, None] <= i_end[None, :])
+            # length = len(state.temp_history)
+            # indexes = jnp.arange(length)
+            # mask = jnp.logical_and(indexes[:, None] >= i_start[None, :], indexes[:, None] <= i_end[None, :])
+            # temp_means = jnp.sum(jnp.where(mask, state.temp_history[:, None], 0), axis=0)
 
-            temp_means = jnp.sum(jnp.where(mask, state.temp_history[:, None], 0), axis=0)
+            temp_means = (state.cum_sum_temp_history[i_end] - state.cum_sum_temp_history[i_start]) / (i_end - i_start)
 
             incomplete_f_cyc, new_iter_complete_f_cyc = cls.compute_cyclic_aging(state,
                                                                                  temp_ambient=temp_ambient,

@@ -68,7 +68,7 @@ class BolunStreamflowModel:
 
         return BolunStreamflowState(init_soh=1.,
                                     soh=1.,
-                                    soc_mean=1,
+                                    soc_mean=1.,
                                     temp_battery_mean=temp,
                                     n_steps=0,
                                     stream_flow_state=stream_flow_state,

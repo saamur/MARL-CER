@@ -2,6 +2,7 @@ from ernestogym.ernesto_jax.energy_storage.battery_models.electrical import Elec
 from ernestogym.ernesto_jax.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
 from ernestogym.ernesto_jax.energy_storage.battery_models.soc import SOCModelState, SOCModel
 from ernestogym.ernesto_jax.energy_storage.battery_models.bolun_streamflow import BolunStreamflowModel, BolunStreamflowState
+from ernestogym.ernesto_jax.energy_storage.bess import BessState
 
 from flax import struct
 from functools import partial
@@ -10,19 +11,8 @@ import jax.numpy as jnp
 
 
 @struct.dataclass
-class BessState:
-
-    nominal_capacity: float
-    c_max: float
-    temp_ambient: float
-
-    elapsed_time: float
-
-    electrical_state: ElectricalModelState
-    thermal_state: ThermalModelState
-    soc_state: SOCModelState
+class BessBolunStreamflowState(BessState):
     aging_state: BolunStreamflowState
-    soh: float
 
 class BatteryEnergyStorageSystem:
 
@@ -36,12 +26,17 @@ class BatteryEnergyStorageSystem:
 
         nominal_capacity = battery_options['params']['nominal_capacity']
         c_max = battery_options['params']['nominal_capacity']
+        nominal_cost = battery_options['params']['nominal_cost']
+        nominal_voltage = battery_options['params']['nominal_voltage']
+        nominal_dod = battery_options['params']['nominal_dod']
+        nominal_lifetime = battery_options['params']['nominal_lifetime']
 
         # nominal_dod ?
         # nominal_lifetime ?
         # nominal_voltage ?
         # nominal_cost ?
-        # v_max, v_min ?
+        v_max = battery_options['params']['v_max']
+        v_min = battery_options['params']['v_min']
         temp_ambient = battery_options['init']['temp_ambient']
         # soc_min soc_max
         sign_convention = battery_options['sign_convention']
@@ -58,15 +53,21 @@ class BatteryEnergyStorageSystem:
 
         electrical_state, thermal_state, aging_state = cls._build_models(models_config, battery_options['init'], sign_convention, temp_battery)
 
-        init_state = BessState(nominal_capacity=nominal_capacity,
-                               c_max=c_max,
-                               temp_ambient=temp_ambient,
-                               elapsed_time=0.,
-                               electrical_state=electrical_state,
-                               thermal_state=thermal_state,
-                               soc_state=soc_state,
-                               aging_state=aging_state,
-                               soh=1.)
+        init_state = BessBolunStreamflowState(nominal_capacity=nominal_capacity,
+                                              nominal_cost=nominal_cost,
+                                              nominal_voltage=nominal_voltage,
+                                              nominal_dod=nominal_dod,
+                                              nominal_lifetime=nominal_lifetime,
+                                              c_max=c_max,
+                                              temp_ambient=temp_ambient,
+                                              v_max=v_max,
+                                              v_min=v_min,
+                                              elapsed_time=0.,
+                                              electrical_state=electrical_state,
+                                              thermal_state=thermal_state,
+                                              soc_state=soc_state,
+                                              aging_state=aging_state,
+                                              soh=1.)
 
         init_state = jax.tree.map(lambda leaf: jnp.array(leaf), init_state)
 
@@ -101,7 +102,7 @@ class BatteryEnergyStorageSystem:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def step(cls, state: BessState, i:float, dt:float):
+    def step(cls, state: BessBolunStreamflowState, i:float, dt:float) -> BessBolunStreamflowState:
         new_electrical_state, v_out, _ = TheveninModel.step_current_driven(state.electrical_state, i, dt)
 
         old_soc = state.soc_state.soc
@@ -123,3 +124,8 @@ class BatteryEnergyStorageSystem:
                                   soh=curr_soh)
 
         return new_state
+
+    @classmethod
+    @partial(jax.jit, static_argnums=[0])
+    def get_feasible_current(cls, state: BessBolunStreamflowState, soc, dt):
+        return SOCModel.get_feasible_current(state.soc_state, soc, state.c_max, dt)

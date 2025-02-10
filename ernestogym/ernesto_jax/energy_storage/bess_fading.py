@@ -1,6 +1,7 @@
 from ernestogym.ernesto_jax.energy_storage.battery_models.electrical_fading import TheveninFadingModel, ElectricalModelFadingState
 from ernestogym.ernesto_jax.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
 from ernestogym.ernesto_jax.energy_storage.battery_models.soc import SOCModelState, SOCModel
+from ernestogym.ernesto_jax.energy_storage.bess import BessState
 
 from flax import struct
 from functools import partial
@@ -9,18 +10,8 @@ import jax.numpy as jnp
 
 
 @struct.dataclass
-class BessState:
-
-    nominal_capacity: float
-    c_max: float
-    temp_ambient: float
-
-    elapsed_time: float
-
+class BessFadingState(BessState):
     electrical_state: ElectricalModelFadingState
-    thermal_state: ThermalModelState
-    soc_state: SOCModelState
-    soh: float
 
 class BatteryEnergyStorageSystem:
 
@@ -34,12 +25,17 @@ class BatteryEnergyStorageSystem:
 
         nominal_capacity = battery_options['params']['nominal_capacity']
         c_max = battery_options['params']['nominal_capacity']
+        nominal_cost = battery_options['params']['nominal_cost']
+        nominal_voltage = battery_options['params']['nominal_voltage']
+        nominal_dod = battery_options['params']['nominal_dod']
+        nominal_lifetime = battery_options['params']['nominal_lifetime']
 
         # nominal_dod ?
         # nominal_lifetime ?
         # nominal_voltage ?
         # nominal_cost ?
-        # v_max, v_min ?
+        v_max = battery_options['params']['v_max']
+        v_min = battery_options['params']['v_min']
         temp_ambient = battery_options['init']['temp_ambient']
         # soc_min soc_max
         sign_convention = battery_options['sign_convention']
@@ -56,14 +52,20 @@ class BatteryEnergyStorageSystem:
 
         electrical_state, thermal_state = cls._build_models(models_config, battery_options['init'], sign_convention, temp_battery)
 
-        init_state = BessState(nominal_capacity=nominal_capacity,
-                               c_max=c_max,
-                               temp_ambient=temp_ambient,
-                               elapsed_time=0.,
-                               electrical_state=electrical_state,
-                               thermal_state=thermal_state,
-                               soc_state=soc_state,
-                               soh=1.)
+        init_state = BessFadingState(nominal_capacity=nominal_capacity,
+                                     nominal_cost=nominal_cost,
+                                     nominal_voltage=nominal_voltage,
+                                     nominal_dod=nominal_dod,
+                                     nominal_lifetime=nominal_lifetime,
+                                     c_max=c_max,
+                                     temp_ambient=temp_ambient,
+                                     v_max=v_max,
+                                     v_min=v_min,
+                                     elapsed_time=0.,
+                                     electrical_state=electrical_state,
+                                     thermal_state=thermal_state,
+                                     soc_state=soc_state,
+                                     soh=1.)
 
         init_state = jax.tree.map(lambda leaf: jnp.array(leaf), init_state)
 
@@ -95,7 +97,7 @@ class BatteryEnergyStorageSystem:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def step(cls, state: BessState, i:float, dt:float):
+    def step(cls, state: BessFadingState, i:float, dt:float) -> BessFadingState:
         new_electrical_state, v_out, _ = TheveninFadingModel.step_current_driven(state.electrical_state, i, dt)
         new_electrical_state, new_c_max = TheveninFadingModel.compute_parameter_fading(new_electrical_state, state.nominal_capacity)
 
@@ -114,3 +116,8 @@ class BatteryEnergyStorageSystem:
                                   soh=new_soh)
 
         return new_state
+
+    @classmethod
+    @partial(jax.jit, static_argnums=[0])
+    def get_feasible_current(cls, state: BessFadingState, soc, dt):
+        return SOCModel.get_feasible_current(state.soc_state, soc, state.c_max, dt)

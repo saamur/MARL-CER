@@ -24,6 +24,7 @@ class ElectricalModelState:
 
     v: float
     i: float
+    p: float
     v_rc: float
 
 # with fading
@@ -57,7 +58,8 @@ class TheveninModel:
                                     is_active= sign_convention == 'active',
                                     v=inits['voltage'],
                                     i=inits['current'],
-                                    v_rc=0.)       #TODO v_rc?
+                                    v_rc=0.,
+                                    p=0.)       #TODO v_rc?
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
@@ -78,7 +80,11 @@ class TheveninModel:
         i_r1 = v_rc / r1
         # i_c = i_load - i_r1       #TODO non penso serva
 
-        new_state = state.replace(v=v, i=i_load, v_rc=v_rc, rc=state.rc.replace(i_resistance=i_r1))
+        power = v * i_load
+
+        power = jnp.where(state.is_active, power, -power)
+
+        new_state = state.replace(v=v, i=i_load, v_rc=v_rc, rc=state.rc.replace(i_resistance=i_r1), p=power)
 
         return new_state, v, i_load
 

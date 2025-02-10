@@ -25,3 +25,13 @@ class SOCModel:
 
         new_state = state.replace(soc=new_soc)
         return new_state, new_soc
+
+    @classmethod
+    @partial(jax.jit, static_argnums=[0])
+    def get_feasible_current(cls, state: SOCModelState, soc: float, c_max: float, dt: float):
+        """
+        Compute the maximum feasible current of the battery according to the soc.
+        """
+        i_max = (state.soc_max - soc) / dt * c_max * 3600
+        i_min = (state.soc_min - soc) / dt * c_max * 3600
+        return i_max, i_min
