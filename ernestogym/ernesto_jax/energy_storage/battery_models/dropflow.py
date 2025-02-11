@@ -136,8 +136,8 @@ class Dropflow:
 
         # Else
 
-        cycles = jnp.where(valid_revs, 0.5, cycles)
-        cycles = cycles.at[new_state.reversals_length-1].set(0)
+        cycles = jnp.where(jnp.logical_and(valid_revs, jnp.arange(len(valid_revs)) < new_state.reversals_length), 0.5, cycles)
+        # cycles = cycles.at[new_state.reversals_length-1].set(0)
 
         new_reversals_length = jax.lax.cond(jnp.logical_and(new_state.reversals_xs[new_state.reversals_length-1] == new_state.stopper_x, new_state.reversals_idx[new_state.reversals_length-1] == new_state.stopper_idx),
                                             lambda : new_state.reversals_length-1,
