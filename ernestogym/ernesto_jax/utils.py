@@ -1,4 +1,6 @@
 import os
+
+import numpy as np
 import pandas as pd
 import jax.numpy as jnp
 
@@ -25,19 +27,30 @@ def to_csv(csv_file: str, results: dict):
 
 
 def change_timestep_array(array: jnp.ndarray, in_timestep: int, out_timestep: int, agg_func: str) -> jnp.ndarray:
-    assert out_timestep % in_timestep == 0 or in_timestep % out_timestep == 0
+    # assert out_timestep % in_timestep == 0 or in_timestep % out_timestep == 0
 
-    if out_timestep > in_timestep:
+    lcm = np.lcm(in_timestep, out_timestep)
 
-        array = jnp.reshape(array, (-1, out_timestep // in_timestep))
+    array = jnp.reshape(jnp.repeat(array, lcm // out_timestep)[:len(array) // (lcm//in_timestep) * (lcm//in_timestep)], shape=(-1, lcm // in_timestep))
 
-        if agg_func == 'sum':
-            return jnp.sum(array, axis=1)
-        elif agg_func == 'mean':
-            return jnp.mean(array, axis=1)
-        else:
-            raise ValueError("Invalid aggregation function '{}'".format(agg_func))
-
+    if agg_func == 'sum':
+        return jnp.sum(array, axis=1) / (lcm // out_timestep)
+    elif agg_func == 'mean':
+        return jnp.mean(array, axis=1)
     else:
+        raise ValueError("Invalid aggregation function '{}'".format(agg_func))
 
-        return jnp.repeat(array, in_timestep // out_timestep)
+    # if out_timestep > in_timestep:
+    #
+    #     array = jnp.reshape(array, (-1, out_timestep // in_timestep))
+    #
+    #     if agg_func == 'sum':
+    #         return jnp.sum(array, axis=1)
+    #     elif agg_func == 'mean':
+    #         return jnp.mean(array, axis=1)
+    #     else:
+    #         raise ValueError("Invalid aggregation function '{}'".format(agg_func))
+    #
+    # else:
+    #
+    #     return jnp.repeat(array, in_timestep // out_timestep)

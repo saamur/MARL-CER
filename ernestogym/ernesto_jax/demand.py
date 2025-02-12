@@ -1,3 +1,4 @@
+import numpy as np
 from flax import struct
 from functools import partial
 import jax
@@ -15,9 +16,13 @@ class DemandData:
 class Demand:
 
     @classmethod
-    def build_demand_data(cls, demand: jnp.ndarray, in_timestep: int, out_timestep: int) -> DemandData:
+    def build_demand_data(cls, demand: jnp.ndarray, in_timestep: int, out_timestep: int, max_length: int) -> DemandData:
 
-        data = change_timestep_array(demand, in_timestep, out_timestep, 'sum')
+        assert len(demand) * in_timestep >= max_length
+
+        data = change_timestep_array(demand[:np.ceil(max_length / in_timestep)], in_timestep, out_timestep, 'sum')
+
+        data = jnp.array(data[:max_length // out_timestep])
 
         return DemandData(data=data,
                           timestep=out_timestep,

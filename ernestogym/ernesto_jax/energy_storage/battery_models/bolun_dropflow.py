@@ -20,6 +20,7 @@ class SocStressModel:
 @struct.dataclass
 class TempStressModel:
     k_temp: float
+    temp_ref: float
 
 @struct.dataclass
 class DodBolunStressModel:
@@ -64,7 +65,8 @@ class BolunDropflowModel:
         time_stress_model = TimeStressModel(k_t=stress_models['time']['k_t'])
         soc_stress_model = SocStressModel(k_soc=stress_models['soc']['k_soc'],
                                           soc_ref=stress_models['soc']['soc_ref'])
-        temp_stress_model = TempStressModel(k_temp=stress_models['temperature']['k_temp'])
+        temp_stress_model = TempStressModel(k_temp=stress_models['temperature']['k_temp'],
+                                            temp_ref=stress_models['temperature']['temp_ref'])
         dod_bolun_stress_model = DodBolunStressModel(k_delta1=stress_models['dod_bolun']['k_delta1'],
                                                      k_delta2=stress_models['dod_bolun']['k_delta2'],
                                                      k_delta3=stress_models['dod_bolun']['k_delta3'])
@@ -104,9 +106,20 @@ class BolunDropflowModel:
 
         def check_new_degradation(state: BolunDropflowState):
             #calendar aging
-            f_cal = (temperature_stress(state.temp_stress_model.k_temp, state.temp_battery_mean, temp_ambient) *
+            # jax.debug.print('JAX k_temp: {k_temp}, mean_temp: {mean_temp}, temp_ref: {temp_ref}', k_temp=state.temp_stress_model.k_temp,
+            #                 mean_temp=state.temp_battery_mean, temp_ref=state.temp_stress_model.temp_ref, ordered=True)
+            #
+            # jax.debug.print('JAX k_soc: {k_soc}, soc: {soc}, soc_ref: {soc_ref}', k_soc=state.soc_stress_model.k_soc,
+            #                 soc=state.soc_mean, soc_ref=state.soc_stress_model.soc_ref, ordered=True)
+            #
+            # jax.debug.print('JAX k_t: {k_t}, t: {t}', k_t=state.time_stress_model.k_t,
+            #                 t=elapsed_time, ordered=True)
+
+            f_cal = (temperature_stress(state.temp_stress_model.k_temp, state.temp_battery_mean, state.temp_stress_model.temp_ref) *
                      soc_stress(state.soc_stress_model.k_soc, state.soc_mean, state.soc_stress_model.soc_ref) *  # fixme siamo sicuri che devo usare la media del soc?
                      time_stress(state.time_stress_model.k_t, elapsed_time))
+
+            # jax.debug.print('jax f_cal: {x}', x=f_cal, ordered=True)
 
             new_dropflow_state, rngs, soc_means, counts, i_start, i_end = Dropflow.extract_new_cycles(state.dropflow_state)
 
@@ -124,7 +137,10 @@ class BolunDropflowModel:
                                                                                  avg_cycle_soc=soc_means,
                                                                                  avg_cycle_temp=temp_means)
 
+            # jax.debug.print('jax incomplete_f_cyc: {x}', x=incomplete_f_cyc, ordered=True)
+
             f_d = f_cal + state.f_cyc + new_iter_complete_f_cyc + incomplete_f_cyc
+            # jax.debug.print('jax f_d: {x}', x=f_d, ordered=True)
 
             deg = jnp.clip(1 - state.alpha_sei * jnp.exp(-state.beta_sei * f_d) - (1 - state.alpha_sei) * jnp.exp(-f_d), 0, 1)
 
@@ -154,7 +170,7 @@ class BolunDropflowModel:
     def compute_cyclic_aging(cls, state: BolunDropflowState, temp_ambient, cycle_type, cycle_dod, avg_cycle_temp, avg_cycle_soc):
         cyclic_aging = (cycle_type *
                         dod_bolun_stress(cycle_dod, state.dod_bolun_stress_model.k_delta1, state.dod_bolun_stress_model.k_delta2, state.dod_bolun_stress_model.k_delta3) *
-                        temperature_stress(state.temp_stress_model.k_temp, avg_cycle_temp, temp_ambient) *
+                        temperature_stress(state.temp_stress_model.k_temp, avg_cycle_temp, state.temp_stress_model.temp_ref) *
                         soc_stress(state.soc_stress_model.k_soc, avg_cycle_soc, state.soc_stress_model.soc_ref))
 
         incomplete_f_cyc = jnp.sum(jnp.where(cycle_type == 0.5, cyclic_aging, 0))

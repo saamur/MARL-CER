@@ -1,3 +1,4 @@
+import numpy as np
 from flax import struct
 from functools import partial
 import jax
@@ -15,9 +16,13 @@ class GenerationData:
 class Generation:
 
     @classmethod
-    def build_generation_data(cls, generation: jnp.ndarray, in_timestep: int, out_timestep: int) -> GenerationData:
+    def build_generation_data(cls, generation: jnp.ndarray, in_timestep: int, out_timestep: int, max_length: int) -> GenerationData:
 
-        data = change_timestep_array(generation, in_timestep, out_timestep, 'sum')
+        assert len(generation) * in_timestep >= max_length
+
+        data = change_timestep_array(generation[:np.ceil(max_length / in_timestep)], in_timestep, out_timestep, 'sum')
+
+        data = jnp.array(data[:max_length // out_timestep])
 
         return GenerationData(data=data,
                               timestep=out_timestep,

@@ -1,3 +1,4 @@
+import numpy as np
 from flax import struct
 from functools import partial
 import jax
@@ -18,9 +19,16 @@ class BuyingPriceData:
 class BuyingPrice:
 
     @classmethod
-    def build_buying_price_data(cls, buying_price: jnp.ndarray, in_timestep: int, out_timestep: int, circular: bool = False) -> BuyingPriceData:
+    def build_buying_price_data(cls, buying_price: jnp.ndarray, in_timestep: int, out_timestep: int, max_length: int, circular: bool = False) -> BuyingPriceData:
 
-        data = change_timestep_array(buying_price, in_timestep, out_timestep, 'mean')
+        if circular:
+            buying_price = np.tile(buying_price, np.ceil(max_length / (len(buying_price) * in_timestep)))
+        else:
+            assert len(buying_price) * in_timestep >= max_length
+
+        data = change_timestep_array(buying_price[:np.ceil(max_length / in_timestep)], in_timestep, out_timestep, 'mean')
+
+        data = jnp.array(data[:max_length // out_timestep])
 
         return BuyingPriceData(data=data,
                                timestep=out_timestep,
@@ -28,8 +36,9 @@ class BuyingPrice:
                                max = jnp.max(data),
                                min = jnp.min(data))
 
+
     @classmethod
-    def build_circular_buying_price_data_from_time_bands(cls, bands_boundaries: list, bands_prices: list, out_timestep: int) -> BuyingPriceData:
+    def build_circular_buying_price_data_from_time_bands(cls, bands_boundaries: list, bands_prices: list, out_timestep: int, max_length: int) -> BuyingPriceData:
         assert len(bands_boundaries) + 1 == len(bands_prices)
 
         data = jnp.empty(shape=(SECONDS_PER_DAY,))
@@ -39,11 +48,8 @@ class BuyingPrice:
         for i in range(len(bands_prices)):
             data = data.at[bands_boundaries[i]:bands_boundaries[i+1]].set(bands_prices[i])
 
-        data = change_timestep_array(data, out_timestep, 'mean')
+        return cls.build_buying_price_data(data, 1, out_timestep, max_length, circular=True)
 
-        return BuyingPriceData(data=data,
-                               timestep=out_timestep,
-                               circular=True)
 
     @classmethod
     @partial(jax.jit, static_argnums=0)
@@ -72,9 +78,13 @@ class SellingPriceData:
 class SellingPrice:
 
     @classmethod
-    def build_selling_price_data(cls, selling_price: jnp.ndarray, in_timestep: int, out_timestep: int) -> SellingPriceData:
+    def build_selling_price_data(cls, selling_price: jnp.ndarray, in_timestep: int, out_timestep: int, max_length: int) -> SellingPriceData:
 
-        data = change_timestep_array(selling_price, in_timestep, out_timestep, 'mean')
+        assert len(selling_price) * in_timestep >= max_length
+
+        data = change_timestep_array(selling_price[:np.ceil(max_length / in_timestep)], in_timestep, out_timestep, 'mean')
+
+        data = jnp.array(data[:max_length // out_timestep])
 
         return SellingPriceData(data=data,
                                 timestep=out_timestep,

@@ -263,7 +263,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                                     C=new_battery_state.c_max * new_battery_state.nominal_voltage / 1000,
                                     DoD_rated=new_battery_state.nominal_dod,
                                     L_rated=new_battery_state.nominal_lifetime,
-                                    v_rated=new_battery_state.nominal_lifetime,
+                                    v_rated=new_battery_state.nominal_voltage,
                                     K_rated=new_battery_state.electrical_state.rc.resistance,
                                     p=new_battery_state.electrical_state.p,
                                     r=new_battery_state.electrical_state.r0,

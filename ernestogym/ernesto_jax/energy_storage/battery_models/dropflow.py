@@ -119,45 +119,61 @@ class Dropflow:
 
         condition = diffs_next < diffs_prev
 
-        def body_fun(val):
-            valid_revs, i, half, cycles = val
+        arange = jnp.arange(len(new_state.reversals_xs))
 
-            return jax.lax.cond(condition[i],
-                                lambda : (valid_revs, i+1, False, cycles),
-                                lambda : jax.lax.cond(half,
-                                                      lambda: (valid_revs.at[i].set(False), i+1, True, cycles.at[i].set(0.5)),
-                                                      lambda: (valid_revs.at[i].set(False).at[i+1].set(False), i+2, False, cycles.at[i].set(1))
+        # def body_fun(val):
+        #     valid_revs, i, half, cycles = val
+        #
+        #     return jax.lax.cond(condition[i],
+        #                         lambda : (valid_revs, i+1, False, cycles),
+        #                         lambda : jax.lax.cond(half,
+        #                                               lambda: (valid_revs.at[i].set(False), i+1, True, cycles.at[i].set(0.5)),
+        #                                               lambda: (valid_revs.at[i].set(False).at[i+1].set(False), i+2, False, cycles.at[i].set(1))
+        #                                               )
+        #                         )
+        #
+        # valid_revs, i, half, cycles = jax.lax.while_loop(lambda val : val[1] < new_state.reversals_length-2,
+        #                                                  body_fun,
+        #                                                  (jnp.ones_like(new_state.reversals_xs, dtype=bool), 0, True, jnp.zeros_like(new_state.reversals_xs)))
+
+
+        def body_fun(val):
+            i, rev_length, rev_xs, rev_idx, i_start, i_end, cycles, rngs, means, num_cyc = val
+
+            return jax.lax.cond(jnp.abs(rev_xs[i+2] - rev_xs[i+1]) < jnp.abs(rev_xs[i+1] - rev_xs[i]),
+                                lambda : (i+1, rev_length, rev_xs, rev_idx, i_start, i_end, cycles, rngs, means, num_cyc),
+                                lambda : jax.lax.cond(i == 0,
+                                                      lambda: (i, rev_length-1, jnp.where(arange < i, rev_xs, jnp.roll(rev_xs, -1)), jnp.where(arange < i, rev_idx, jnp.roll(rev_idx, -1)),
+                                                               i_start.at[num_cyc].set(rev_idx[i]), i_end.at[num_cyc].set(rev_idx[i+1]), cycles.at[num_cyc].set(0.5),
+                                                               rngs.at[num_cyc].set(jnp.abs(rev_xs[i]-rev_xs[i+1])), means.at[num_cyc].set(0.5*(rev_xs[i]+rev_xs[i+1])), num_cyc+1),
+                                                      lambda: ((i, rev_length-2, jnp.where(arange < i, rev_xs, jnp.roll(rev_xs, -2)), jnp.where(arange < i, rev_idx, jnp.roll(rev_idx, -2)),
+                                                               i_start.at[num_cyc].set(rev_idx[i]), i_end.at[num_cyc].set(rev_idx[i+1]), cycles.at[num_cyc].set(1.),
+                                                               rngs.at[num_cyc].set(jnp.abs(rev_xs[i]-rev_xs[i+1])), means.at[num_cyc].set(0.5*(rev_xs[i]+rev_xs[i+1])), num_cyc+1))
                                                       )
                                 )
 
-        valid_revs, i, half, cycles = jax.lax.while_loop(lambda val : val[1] < new_state.reversals_length-2,
-                                                         body_fun,
-                                                         (jnp.ones_like(new_state.reversals_xs, dtype=bool), 0, True, jnp.zeros_like(new_state.reversals_xs)))
+        i, rev_length, rev_xs, rev_idx, i_start, i_end, cycles, rngs, means, num_cyc = jax.lax.while_loop(
+            lambda val: val[0] < val[1] - 2,
+            body_fun,
+            (0, new_state.reversals_length, new_state.reversals_xs, new_state.reversals_idx,
+             jnp.zeros_like(new_state.reversals_xs, dtype=int), jnp.zeros_like(new_state.reversals_xs, dtype=int),
+             jnp.zeros_like(new_state.reversals_xs), jnp.zeros_like(new_state.reversals_xs),
+             jnp.zeros_like(new_state.reversals_xs), 0))
+
 
         # Else
 
-        cycles = jnp.where(jnp.logical_and(valid_revs, jnp.arange(len(valid_revs)) < new_state.reversals_length), 0.5, cycles)
-        # cycles = cycles.at[new_state.reversals_length-1].set(0)
+        i_start = jnp.where(arange < num_cyc, i_start, jnp.roll(rev_idx, num_cyc))
+        i_end = jnp.where(arange < num_cyc, i_end, jnp.roll(rev_idx, num_cyc-1))
+        rngs = jnp.where(arange < num_cyc, rngs, jnp.abs(jnp.roll(rev_xs, num_cyc) - jnp.roll(rev_xs, num_cyc-1)))
+        means = jnp.where(arange < num_cyc, means, 0.5 * (jnp.roll(rev_xs, num_cyc) + jnp.roll(rev_xs, num_cyc - 1)))
+        cycles = jnp.where(jnp.logical_and(arange >= num_cyc, arange < (num_cyc + rev_length - 1)),0.5, cycles)
 
-        new_reversals_length = jax.lax.cond(jnp.logical_and(new_state.reversals_xs[new_state.reversals_length-1] == new_state.stopper_x, new_state.reversals_idx[new_state.reversals_length-1] == new_state.stopper_idx),
-                                            lambda : new_state.reversals_length-1,
-                                            lambda : new_state.reversals_length)
+        rev_length = jax.lax.select(jnp.logical_and(rev_xs[rev_length-1] == new_state.stopper_x, rev_idx[rev_length-1] == new_state.stopper_idx),
+                                    rev_length-1, rev_length)
 
-        rngs = abs_diffs
-        means = 0.5 * (new_state.reversals_xs[:-1] + new_state.reversals_xs[1:])
-        counts = cycles[:-1]
-        i_start = new_state.reversals_idx[:-1]
-        i_end = new_state.reversals_idx[1:]
+        new_state = new_state.replace(reversals_idx=rev_idx,
+                                      reversals_xs=rev_xs,
+                                      reversals_length=rev_length)
 
-
-        #compact arrays:
-        mask = jnp.logical_and(valid_revs, jnp.arange(len(valid_revs)) < new_reversals_length)
-
-        indexes = jnp.argsort(jnp.logical_not(mask))
-        new_reversals_length = mask.sum()
-
-        new_state = new_state.replace(reversals_idx=new_state.reversals_idx[indexes],
-                                      reversals_xs=new_state.reversals_xs[indexes],
-                                      reversals_length=new_reversals_length)
-
-        return new_state, rngs, means, counts, i_start, i_end
+        return new_state, rngs, means, cycles, i_start, i_end
