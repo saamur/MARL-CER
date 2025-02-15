@@ -255,16 +255,16 @@ class RECEnv(MultiAgentEnv):
     def _get_buying_prices(self, buy_price_data, timestep):
         return BuyingPrice.get_buying_price(buy_price_data, timestep)
 
-    def _calc_balances_prev_step(self, state: EnvState):
-        demands_batteries = self._get_demands(self.demands_battery_houses, state.timeframe-self.env_step)
-        generations_batteries = self._get_generations(self.generations_battery_houses, state.timeframe-self.env_step)
+    def _calc_balances(self, state: EnvState, past_shift=0.):
+        demands_batteries = self._get_demands(self.demands_battery_houses, state.timeframe-past_shift)
+        generations_batteries = self._get_generations(self.generations_battery_houses, state.timeframe-past_shift)
 
         power_batteries = state.battery_states.electrical_state.p       # TODO NON HO IDEA SE SIA CORRETTO CHECK SIGN
 
         balance_battery_houses = generations_batteries - demands_batteries - power_batteries
 
-        demands_passive_houses = self._get_demands(self.demands_passive_houses, state.timeframe-self.env_step)
-        generations_passive_houses = self._get_generations(self.generations_passive_houses, state.timeframe-self.env_step)
+        demands_passive_houses = self._get_demands(self.demands_passive_houses, state.timeframe-past_shift)
+        generations_passive_houses = self._get_generations(self.generations_passive_houses, state.timeframe-past_shift)
 
         balance_passive_houses = generations_passive_houses - demands_passive_houses
 
@@ -306,7 +306,7 @@ class RECEnv(MultiAgentEnv):
             if 'energy_level' in self._obs_battery_agents_keys:
                 agg_obs['energy_level'] = state.battery_states.c_max * state.battery_states.electrical_state.v * state.battery_states.soc_state.soc
 
-            balance_plus, balance_minus = self._calc_balances_prev_step(state)
+            balance_plus, balance_minus = self._calc_balances(state, past_shift=self.env_step)
 
             if 'network_REC_plus' in self._obs_battery_agents_keys:
                 agg_obs['network_REC_plus'] = jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus)
@@ -379,7 +379,78 @@ class RECEnv(MultiAgentEnv):
                             state, actions)
 
     def step_rec(self, state: EnvState, actions: Dict[str, chex.Array]) -> Tuple[Dict[str, chex.Array], EnvState, Dict[str, float], Dict[str, bool], Dict]:
-        ...
+
+        balance_plus, balance_minus = self._calc_balances(state)
+
+        self_consumption = jnp.minimum(balance_plus, balance_minus)
+
+        tot_incentives = self._calc_rec_incentives(state, self_consumption)
+
+        rec_reward = self._calc_rec_reward(state, self_consumption)
+
+        r_glob = tot_incentives * actions[self.rec_agent]
+
+
+
+
+
+        terminated = state.battery_states.soh <= self._termination['min_soh']
+
+        truncated = jnp.logical_or(state.iter >= self._termination['max_iterations'],
+                                   jnp.logical_or(jnp.logical_or(jax.vmap(Demand.is_run_out_of_data, in_axes=(0, None))(
+                                       self.demands_battery_houses, state.timeframe),
+                                                                 jax.vmap(Generation.is_run_out_of_data,
+                                                                          in_axes=(0, None))(
+                                                                     self.generations_battery_houses, state.timeframe)),
+                                                  jnp.logical_or(
+                                                      jax.vmap(BuyingPrice.is_run_out_of_data, in_axes=(0, None))(
+                                                          self.buying_prices_battery_houses, state.timeframe),
+                                                      jax.vmap(SellingPrice.is_run_out_of_data, in_axes=(0, None))(
+                                                          self.selling_prices_battery_houses, state.timeframe))),
+                                   )
+
+        new_state = state.replace(is_rec_turn=False)
+
+
+
+
+
+
+        rewards = {a: r_glob[i] for i, a in enumerate(self.battery_agents)}
+        rewards[self.rec_agent] = rec_reward
+
+        dones_array = jnp.logical_or(truncated, terminated)
+
+        dones = {a: dones_array[i] for i, a in enumerate(self.battery_agents)}
+        dones[self.rec_agent] = False
+        dones['__all__'] = jnp.all(dones_array)
+
+        packed_info = {'soc': jnp.zeros(self.num_battery_agents),
+                       'soh': jnp.zeros(self.num_battery_agents),
+                       'pure_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
+                                       'r_op': jnp.zeros(self.num_battery_agents),
+                                       'r_deg': jnp.zeros(self.num_battery_agents),
+                                       'r_clipping': jnp.zeros(self.num_battery_agents)},
+                       'norm_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
+                                       'r_op': jnp.zeros(self.num_battery_agents),
+                                       'r_deg': jnp.zeros(self.num_battery_agents),
+                                       'r_clipping': jnp.zeros(self.num_battery_agents)},
+                       'weig_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
+                                       'r_op': jnp.zeros(self.num_battery_agents),
+                                       'r_deg': jnp.zeros(self.num_battery_agents),
+                                       'r_clipping': jnp.zeros(self.num_battery_agents)},
+                       'r_tot': r_glob,
+                       'r_glob': r_glob}
+
+        info = {a: jax.tree.map(lambda val: val[i], packed_info) for i, a in enumerate(self.battery_agents)}
+
+
+        info[self.rec_agent] = {'self_consumption': self_consumption,
+                                'tot_incentives': tot_incentives,
+                                'reward': rec_reward}
+
+        return self.get_obs(new_state), new_state, rewards, dones, info
+
 
     def step_batteries(self, state: EnvState, actions: Dict[str, chex.Array]) -> Tuple[Dict[str, chex.Array], EnvState, Dict[str, float], Dict[str, bool], Dict]:
         actions = jnp.array([actions[a] for a in self.num_battery_agents])
@@ -445,7 +516,7 @@ class RECEnv(MultiAgentEnv):
                                   is_rec_turn=True)
 
         rewards = {a: r_tot[i] for i, a in enumerate(self.battery_agents)}
-        rewards[self.rec_agent] = 0.
+        rewards[self.rec_agent] = jnp.array(0.)
 
         packed_info = {'soc': new_battery_states.soc_state.soc,
                        'soh': new_battery_states.soh,
@@ -483,7 +554,7 @@ class RECEnv(MultiAgentEnv):
 
         delta_soh = jnp.abs(old_soh - curr_soh)
         soh_cost = delta_soh * replacement_cost / (1 - soh_limit)
-        return - soh_cost
+        return -soh_cost
 
     @partial(jax.vmap, in_axes=(None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     def _calc_op_reward(self, replacement_cost: float,
@@ -524,3 +595,6 @@ class RECEnv(MultiAgentEnv):
                                                    jnp.abs(self.generations_battery_houses.max - self.generations_battery_houses.min))
 
         return norm_r_trading, norm_r_op, r_deg, norm_r_clipping
+
+    def _calc_rec_incentives(self, state: EnvState, self_consumption: float):
+        ...
