@@ -121,7 +121,7 @@ class BolunDropflowModel:
 
             # jax.debug.print('jax f_cal: {x}', x=f_cal, ordered=True)
 
-            new_dropflow_state, rngs, soc_means, counts, i_start, i_end = Dropflow.extract_new_cycles(state.dropflow_state)
+            new_dropflow_state, rngs, soc_means, counts, i_start, i_end, num_complete_cyc, num_prov_cyc = Dropflow.extract_new_cycles(state.dropflow_state)
 
             # length = len(state.temp_history)
             # indexes = jnp.arange(length)
@@ -130,16 +130,20 @@ class BolunDropflowModel:
 
             temp_means = (state.cum_sum_temp_history[i_end] - state.cum_sum_temp_history[i_start]) / (i_end - i_start)
 
-            incomplete_f_cyc, new_iter_complete_f_cyc = cls.compute_cyclic_aging(state,
+            new_iter_complete_f_cyc, incomplete_f_cyc = cls.compute_cyclic_aging(state,
                                                                                  temp_ambient=temp_ambient,
                                                                                  cycle_type=counts,
                                                                                  cycle_dod=rngs,
                                                                                  avg_cycle_soc=soc_means,
-                                                                                 avg_cycle_temp=temp_means)
+                                                                                 avg_cycle_temp=temp_means,
+                                                                                 num_complete_cyc=num_complete_cyc,
+                                                                                 num_prov_cyc=num_prov_cyc)
 
             # jax.debug.print('jax incomplete_f_cyc: {x}', x=incomplete_f_cyc, ordered=True)
-
+            # jax.debug.print('jax new_complete_f_cyc: {x}', x=new_iter_complete_f_cyc, ordered=True)
+            #
             f_d = f_cal + state.f_cyc + new_iter_complete_f_cyc + incomplete_f_cyc
+            # jax.debug.print('jax prev_complete: {x}', x=state.f_cyc, ordered=True)
             # jax.debug.print('jax f_d: {x}', x=f_d, ordered=True)
 
             deg = jnp.clip(1 - state.alpha_sei * jnp.exp(-state.beta_sei * f_d) - (1 - state.alpha_sei) * jnp.exp(-f_d), 0, 1)
@@ -167,16 +171,18 @@ class BolunDropflowModel:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def compute_cyclic_aging(cls, state: BolunDropflowState, temp_ambient, cycle_type, cycle_dod, avg_cycle_temp, avg_cycle_soc):
+    def compute_cyclic_aging(cls, state: BolunDropflowState, temp_ambient, cycle_type, cycle_dod, avg_cycle_temp, avg_cycle_soc, num_complete_cyc, num_prov_cyc):
         cyclic_aging = (cycle_type *
                         dod_bolun_stress(cycle_dod, state.dod_bolun_stress_model.k_delta1, state.dod_bolun_stress_model.k_delta2, state.dod_bolun_stress_model.k_delta3) *
                         temperature_stress(state.temp_stress_model.k_temp, avg_cycle_temp, state.temp_stress_model.temp_ref) *
                         soc_stress(state.soc_stress_model.k_soc, avg_cycle_soc, state.soc_stress_model.soc_ref))
 
-        incomplete_f_cyc = jnp.sum(jnp.where(cycle_type == 0.5, cyclic_aging, 0))
-        new_complete_f_cyc = jnp.sum(jnp.where(cycle_type == 1, cyclic_aging, 0))
+        arange = jnp.arange(len(cycle_type))
 
-        return incomplete_f_cyc, new_complete_f_cyc
+        new_complete_f_cyc = jnp.sum(jnp.where(arange < num_complete_cyc, cyclic_aging, 0))
+        incomplete_f_cyc = jnp.sum(jnp.where(jnp.logical_and(arange >= num_complete_cyc, arange < num_complete_cyc+num_prov_cyc), cyclic_aging, 0))
+
+        return new_complete_f_cyc, incomplete_f_cyc
 
 
 def temperature_stress(k_temp, mean_temp, temp_ref):

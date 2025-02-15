@@ -134,4 +134,4 @@ class BatteryEnergyStorageSystem:
     @classmethod
     @partial(jax.jit, static_argnums=[0])
     def get_feasible_current(cls, state: BessBolunDropflowState, soc, dt):
-        return SOCModel.get_feasible_current(state.soc_state, soc, state.c_max, dt)
+        return SOCModel.get_feasible_current(state.soc_state, soc, state.nominal_capacity, dt)      #FIXME DOVREBBE ESSERE state.c_max MA L'IMP ORIG FA CCSÌ

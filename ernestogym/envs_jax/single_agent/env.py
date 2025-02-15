@@ -47,7 +47,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
     SECONDS_PER_DAY = 60 * 60 * 24
     DAYS_PER_YEAR = 365.25
 
-    def __init__(self, settings: Dict, battery_type: str):
+    def __init__(self, settings: Dict, battery_type: str, demand_profile: str):
 
         if battery_type == 'fading':
             self.BESS = bess_fading.BatteryEnergyStorageSystem
@@ -72,10 +72,25 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         env_step = settings['step']
 
-        self.demand_data = Demand.build_demand_data(jnp.array(settings['demand']['data']['64']), in_timestep=self.SECONDS_PER_MINUTE, out_timestep=env_step)
-        self.generation_data = Generation.build_generation_data(jnp.array(settings['generation']['data']['PV']), in_timestep=self.SECONDS_PER_MINUTE, out_timestep=env_step)
-        self.buying_price_data = BuyingPrice.build_buying_price_data(jnp.array(settings['market']['data']['ask']), in_timestep=self.SECONDS_PER_HOUR, out_timestep=env_step)
-        self.selling_price_data = SellingPrice.build_selling_price_data(jnp.array(settings['market']['data']['bid']), in_timestep=self.SECONDS_PER_HOUR, out_timestep=env_step)
+        dem_d = jnp.array(settings['demand']['data'][demand_profile])
+        gen_d = jnp.array(settings['generation']['data']['PV'])
+        buy_d = jnp.array(settings['market']['data']['ask'])
+        sell_d = jnp.array(settings['market']['data']['bid'])
+
+        dem_step = self.SECONDS_PER_MINUTE
+        gen_step = self.SECONDS_PER_MINUTE
+        buy_step = self.SECONDS_PER_HOUR
+        sell_step = self.SECONDS_PER_HOUR
+
+        max_length = min(len(dem_d) * dem_step,
+                         len(gen_d) * gen_step,
+                         len(buy_d) * buy_step,
+                         len(sell_d) * sell_step)
+
+        self.demand_data = Demand.build_demand_data(dem_d, in_timestep=dem_step, out_timestep=env_step, max_length=max_length)
+        self.generation_data = Generation.build_generation_data(gen_d, in_timestep=gen_step, out_timestep=env_step, max_length=max_length)
+        self.buying_price_data = BuyingPrice.build_buying_price_data(buy_d, in_timestep=buy_step, out_timestep=env_step, max_length=max_length)
+        self.selling_price_data = SellingPrice.build_selling_price_data(sell_d, in_timestep=sell_step, out_timestep=env_step, max_length=max_length)
 
 
 
@@ -94,6 +109,9 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         trad_norm_term = max(self.generation_data.max * self.selling_price_data.max,
                              self.demand_data.max * self.buying_price_data.max)
+
+        # print(f'jax gen {self.generation_data.max} sell {self.selling_price_data.max} dem {self.demand_data.max} buy {self.buying_price_data.max}')
+        # print(f'jax trad_norm_term {trad_norm_term}')
 
         # eval_profile ?
 
@@ -247,13 +265,29 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         to_load = last_v * i_to_apply
 
-        to_trade = Demand.get_demand(self.demand_data, new_timeframe) - Generation.get_generation(self.generation_data, new_timeframe) - to_load
+        to_trade = Generation.get_generation(self.generation_data, new_timeframe) - Demand.get_demand(self.demand_data, new_timeframe) - to_load
+        # to_trade = Generation.get_generation(self.generation_data, state.timeframe) - Demand.get_demand(self.demand_data, state.timeframe) - to_load
+
+        # jax.debug.print('jax {i} dem: {gen}', i=state.iteration, gen=Demand.get_demand(self.demand_data, state.timeframe), ordered=True)
+        # jax.debug.print('jax {i} dem new: {gen}', i=state.iteration,
+        #                 gen=Demand.get_demand(self.demand_data, new_timeframe), ordered=True)
+        #
+        # jax.debug.print('jax {i} jax to trade: {gen}', i=state.iteration, gen=to_trade, ordered=True)
 
         old_soh = state.battery_state.soh
 
         new_battery_state = self.BESS.step(state.battery_state, i_to_apply, dt=params.env_step)
 
-        r_trading = jnp.minimum(0, to_trade) * obs_pre_step[self._obs_idx['buying_price']] + jnp.maximum(0, to_trade) * obs_pre_step[self._obs_idx['selling_price']]
+        # jax.debug.print('jax {i} jax buy price: {gen}', i=state.iteration, gen=obs_pre_step[self._obs_idx['buying_price']], ordered=True)
+        # jax.debug.print('jax {i} jax sell price: {gen}', i=state.iteration,
+        #                 gen=SellingPrice.get_selling_price(self.selling_price_data, new_timeframe), ordered=True)
+
+        # r_trading = jnp.minimum(0, to_trade) * obs_pre_step[self._obs_idx['buying_price']] + jnp.maximum(0, to_trade) * obs_pre_step[self._obs_idx['selling_price']]
+
+        r_trading = jnp.minimum(0, to_trade) * BuyingPrice.get_buying_price(self.buying_price_data, new_timeframe) + jnp.maximum(0, to_trade) * SellingPrice.get_selling_price(self.selling_price_data, new_timeframe)
+
+        # jax.debug.print('jax {i} jax r_trad: {gen}', i=state.iteration,
+        #                 gen=r_trading, ordered=True)
 
         r_clipping = jnp.abs((action - i_to_apply) * last_v)
 
@@ -269,6 +303,8 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                                     r=new_battery_state.electrical_state.r0,
                                     soc=new_battery_state.soc_state.soc,
                                     is_discharging=(new_battery_state.electrical_state.p <= 0))
+
+        # jax.debug.print('r_op {r}', r=r_op, ordered=True)
 
         norm_r_trading, norm_r_op, norm_r_deg, norm_r_clipping = self._normalize_reward(new_battery_state, r_trading, r_op, r_deg, r_clipping, params)
         weig_r_trading, weig_r_op, weig_r_deg, weig_r_clipping = (params.trading_coeff * norm_r_trading, params.op_cost_coeff * norm_r_op,
@@ -353,6 +389,9 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         #                       1 * C * K_rated * (1 - soc) / (soc * v_rated ** 2) * p))
 
         # Dividing by 1e3 to convert because it is in €/kWh, to get the cost in €/Wh
+
+        # jax.debug.print('jax c_bat {c}', c=c_bat, ordered=True)
+        # jax.debug.print('jax h_bat {c}', c=h_bat, ordered=True)
         op_cost_term = c_bat * h_bat / 1e3
 
         return - op_cost_term

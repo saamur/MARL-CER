@@ -41,6 +41,8 @@ def operational_cost(replacement_cost: float,
     # Coefficient c_avai = c_bat
     c_bat = replacement_cost / (C_rated * DoD_rated * (0.9 * L_rated - 0.1))
 
+    # print(f'c_bat = {c_bat}')
+
     # P_loss depending on P charged or discharged
     if is_discharging:
         p_loss = (1 * (r + K_rated / soc) / v_rated**2 * p**2 +
@@ -52,6 +54,9 @@ def operational_cost(replacement_cost: float,
                  1 * C * K_rated * (1 - soc) / (soc * v_rated**2) * p)
 
     # Dividing by 1e3 to convert because it is in €/kWh, to get the cost in €/Wh
+
+    # print(f'h_bat = {h_bat}')
+
     return c_bat * h_bat / 1e3
 
 

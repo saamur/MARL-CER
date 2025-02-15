@@ -31,7 +31,14 @@ def change_timestep_array(array: jnp.ndarray, in_timestep: int, out_timestep: in
 
     lcm = np.lcm(in_timestep, out_timestep)
 
-    array = jnp.reshape(jnp.repeat(array, lcm // out_timestep)[:len(array) // (lcm//in_timestep) * (lcm//in_timestep)], shape=(-1, lcm // in_timestep))
+    repeated = jnp.repeat(array, lcm // out_timestep)
+    # print(repeated)
+    repeated = repeated[:len(repeated) // (lcm//in_timestep) * (lcm//in_timestep)]
+    # print(repeated)
+
+    array = jnp.reshape(repeated, shape=(-1, lcm // in_timestep))
+
+    # print(array)
 
     if agg_func == 'sum':
         return jnp.sum(array, axis=1) / (lcm // out_timestep)

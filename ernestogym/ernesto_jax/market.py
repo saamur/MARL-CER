@@ -22,11 +22,11 @@ class BuyingPrice:
     def build_buying_price_data(cls, buying_price: jnp.ndarray, in_timestep: int, out_timestep: int, max_length: int, circular: bool = False) -> BuyingPriceData:
 
         if circular:
-            buying_price = np.tile(buying_price, np.ceil(max_length / (len(buying_price) * in_timestep)))
+            buying_price = np.tile(buying_price, np.ceil(max_length / (len(buying_price) * in_timestep)).astype(int))
         else:
             assert len(buying_price) * in_timestep >= max_length
 
-        data = change_timestep_array(buying_price[:np.ceil(max_length / in_timestep)], in_timestep, out_timestep, 'mean')
+        data = change_timestep_array(buying_price[:np.ceil(max_length / in_timestep).astype(int)], in_timestep, out_timestep, 'mean')
 
         data = jnp.array(data[:max_length // out_timestep])
 
@@ -82,7 +82,11 @@ class SellingPrice:
 
         assert len(selling_price) * in_timestep >= max_length
 
-        data = change_timestep_array(selling_price[:np.ceil(max_length / in_timestep)], in_timestep, out_timestep, 'mean')
+        data = change_timestep_array(selling_price[:np.ceil(max_length / in_timestep).astype(int)], in_timestep, out_timestep, 'mean')
+        # data = change_timestep_array(selling_price, in_timestep,
+        #                              out_timestep, 'mean')
+
+        # print(data)
 
         data = jnp.array(data[:max_length // out_timestep])
 

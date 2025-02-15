@@ -20,7 +20,7 @@ class Generation:
 
         assert len(generation) * in_timestep >= max_length
 
-        data = change_timestep_array(generation[:np.ceil(max_length / in_timestep)], in_timestep, out_timestep, 'sum')
+        data = change_timestep_array(generation[:np.ceil(max_length / in_timestep).astype(int)], in_timestep, out_timestep, 'sum')
 
         data = jnp.array(data[:max_length // out_timestep])
 
