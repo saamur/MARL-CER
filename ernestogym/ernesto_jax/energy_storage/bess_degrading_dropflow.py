@@ -23,7 +23,7 @@ class BatteryEnergyStorageSystem:
                        models_config: list,
                        battery_options: dict,
                        input_var: str,
-                       check_soh_every: int=100):
+                       check_soh_every: int=1):
 
         assert input_var == 'current'
 

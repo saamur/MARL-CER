@@ -15,19 +15,22 @@ class DemandData:
 
 class Demand:
 
-    @classmethod
-    def build_demand_data(cls, demand: jnp.ndarray, in_timestep: int, out_timestep: int, max_length: int) -> DemandData:
+    @classmethod        #TODO SPEZZARE IN DUE FUNZIONI
+    def build_demand_array(cls, demand: jnp.ndarray, in_timestep: int, out_timestep: int, max_length: int) -> jnp.ndarray:
 
         assert len(demand) * in_timestep >= max_length
 
         data = change_timestep_array(demand[:np.ceil(max_length / in_timestep).astype(int)], in_timestep, out_timestep, 'sum')
 
-        data = jnp.array(data[:max_length // out_timestep])
+        return jnp.array(data[:max_length // out_timestep])
 
+    @classmethod
+    def build_demand_data(cls, data, timestep) -> DemandData:
         return DemandData(data=data,
-                          timestep=out_timestep,
+                          timestep=timestep,
                           max=jnp.max(data),
                           min=jnp.min(data))
+
 
     @classmethod
     @partial(jax.jit, static_argnums=0)

@@ -1,16 +1,15 @@
 demand:
-  path_train: "ernestogym/ernesto_jax/data/demand/rse_profiles_train.csv"
-  path_test: "ernestogym/ernesto_jax/data/demand/rse_profiles_test.csv"
-  timestep: 3600 # seconds
-#  test_profiles: # column label to use to test the agent
-#    - "70"
-#    - "71"
-#    - "72"
+  path: "ernestogym/ernesto_jax/data/demand/dataset.csv"
+  timestep: 60 # seconds
+  test_profiles: # column label to use to test the agent
+    - "70"
+    - "71"
+    - "72"
   data_usage: "end" # "circular/end"
 
 generation:
   path: "ernestogym/ernesto_jax/data/generation/pv_dataset.csv"
-  timestep: 3600 # seconds
+  timestep: 60 # seconds
   data_usage: "end" # "circular/end"
 
 market:
@@ -25,7 +24,7 @@ dummy:
     ask: 10
     bid: 8
 
-observations:
+battery_observations:
   - demand
   - temperature
   - soc
@@ -33,6 +32,16 @@ observations:
   - seconds_of_day
   - generation
   - market
+  - network_REC_plus
+  - network_REC_minus
+
+rec_agent_observations:
+  - demands_base_battery_houses
+  - demands_battery_battery_houses
+  - generations_base_battery_houses
+  - demands_passive_houses
+  - generations_passive_houses
+
 
 # Aging options determining the reward term related to degradation
 # Only one can be set to True (at the moment)

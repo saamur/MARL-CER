@@ -2,6 +2,7 @@ import chex
 from flax import struct
 import jax
 import jax.numpy as jnp
+# import numpy as np
 
 from gymnax.environments import environment
 from gymnax.environments import spaces
@@ -13,7 +14,7 @@ import ernestogym.ernesto_jax.energy_storage.bess_fading as bess_fading
 import ernestogym.ernesto_jax.energy_storage.bess_degrading as bess_degrading
 import ernestogym.ernesto_jax.energy_storage.bess_degrading_dropflow as bess_degrading_dropflow
 
-from ernestogym.ernesto_jax.demand import Demand
+from ernestogym.ernesto_jax.demand import Demand, DemandData
 from ernestogym.ernesto_jax.generation import Generation
 from ernestogym.ernesto_jax.market import BuyingPrice, SellingPrice
 
@@ -24,6 +25,8 @@ from collections import OrderedDict
 class EnvState(environment.EnvState):
     battery_state: BessState
 
+    demand_data: DemandData
+
     iteration: int = 0.
     timeframe: int = 0
 
@@ -33,12 +36,13 @@ class EnvParams(environment.EnvParams):
     op_cost_coeff: float = 0
     deg_coeff: float = 0
     clip_action_coeff: float = 0
-    use_reward_normalization: bool = False
-    trad_norm_term: float = 1.
+    # trad_norm_term: float = 1.
+    max_length: int = -1
 
     i_min_action: float = -1
     i_max_action: float = 1
     env_step: int = 60
+    is_training: bool = True
 
 
 class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
@@ -72,30 +76,39 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         env_step = settings['step']
 
-        dem_d = jnp.array(settings['demand']['data'][demand_profile])
+        # dem_d = jnp.array(settings['demand']['data'][demand_profile])
+
+        dem_step = settings['demand']['timestep']
+        gen_step = settings['generation']['timestep']
+        buy_step = settings['market']['timestep']
+        sell_step = settings['market']['timestep']
+
+        dem_df = settings['demand']['data_train'].drop(columns=['delta_time'])
+        # dem_dict = dem_df.to_dict(orient='list')
+        dem_matrix_raw = jnp.array(dem_df.to_numpy().T)
+
         gen_d = jnp.array(settings['generation']['data']['PV'])
         buy_d = jnp.array(settings['market']['data']['ask'])
         sell_d = jnp.array(settings['market']['data']['bid'])
 
-        dem_step = self.SECONDS_PER_MINUTE
-        gen_step = self.SECONDS_PER_MINUTE
-        buy_step = self.SECONDS_PER_HOUR
-        sell_step = self.SECONDS_PER_HOUR
-
-        max_length = min(len(dem_d) * dem_step,
+        max_length = min(dem_matrix_raw.shape[1] * dem_step,
                          len(gen_d) * gen_step,
                          len(buy_d) * buy_step,
                          len(sell_d) * sell_step)
 
-        self.demand_data = Demand.build_demand_data(dem_d, in_timestep=dem_step, out_timestep=env_step, max_length=max_length)
+        self.dem_matrix = jnp.array([Demand.build_demand_array(dem_matrix_raw[i], in_timestep=dem_step, out_timestep=env_step, max_length=max_length) for i in range(dem_matrix_raw.shape[0])])
+
+        demand_data = Demand.build_demand_data(self.dem_matrix[0], timestep=env_step)
         self.generation_data = Generation.build_generation_data(gen_d, in_timestep=gen_step, out_timestep=env_step, max_length=max_length)
         self.buying_price_data = BuyingPrice.build_buying_price_data(buy_d, in_timestep=buy_step, out_timestep=env_step, max_length=max_length)
         self.selling_price_data = SellingPrice.build_selling_price_data(sell_d, in_timestep=sell_step, out_timestep=env_step, max_length=max_length)
 
-
-
+        test_dem_df = settings['demand']['data_test'].drop(columns=['delta_time'])
+        test_dem_matrix_raw = jnp.array(test_dem_df.to_numpy().T)
+        self.test_dem_matrix = jnp.array([Demand.build_demand_array(test_dem_matrix_raw[i], in_timestep=dem_step, out_timestep=env_step, max_length=max_length) for i in range(test_dem_matrix_raw.shape[0])])
 
         self._termination = settings['termination']
+        self._use_reward_normalization = settings['use_reward_normalization']
 
         assert self._termination['max_iterations'] is not None
 
@@ -105,10 +118,10 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         op_cost_coeff = settings['reward']['operational_cost_coeff'] if 'operational_cost_coeff' in settings['reward'] else 0
         deg_coeff = settings['reward']['degradation_coeff'] if 'degradation_coeff' in settings['reward'] else 0
         clip_action_coeff = settings['reward']['clip_action_coeff'] if 'clip_action_coeff' in settings['reward'] else 0
-        use_reward_normalization = settings['use_reward_normalization']
 
-        trad_norm_term = max(self.generation_data.max * self.selling_price_data.max,
-                             self.demand_data.max * self.buying_price_data.max)
+
+        # trad_norm_term = max(self.generation_data.max * self.selling_price_data.max,
+        #                      self.dem_dict[0].max * self.buying_price_data.max)
 
         # print(f'jax gen {self.generation_data.max} sell {self.selling_price_data.max} dem {self.demand_data.max} buy {self.buying_price_data.max}')
         # print(f'jax trad_norm_term {trad_norm_term}')
@@ -172,7 +185,8 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         self.initial_state = EnvState(iteration=0,
                                       time=0,
-                                      battery_state=battery_state)
+                                      battery_state=battery_state,
+                                      demand_data=demand_data)
 
         self.initial_state = jax.tree.map(lambda leaf: jnp.array(leaf), self.initial_state)
 
@@ -180,18 +194,20 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                                 op_cost_coeff=op_cost_coeff,
                                 deg_coeff=deg_coeff,
                                 clip_action_coeff=clip_action_coeff,
-                                use_reward_normalization=use_reward_normalization,
-                                trad_norm_term=trad_norm_term,
+                                # trad_norm_term=trad_norm_term,
                                 i_min_action=i_min_action,
                                 i_max_action=i_max_action,
-                                env_step=env_step)
+                                env_step=env_step,
+                                is_training=True,
+                                max_length=max_length)
 
     @property
     def default_params(self) -> EnvParams:
         return EnvParams()
 
     def observation_space(self, params: EnvParams):
-        return spaces.Dict({key: spaces.Box(self.spaces[key]['low'], self.spaces[key]['high'], shape=(1,)) for key in self._obs_keys})
+        # return spaces.Dict({key: spaces.Box(self.spaces[key]['low'], self.spaces[key]['high'], shape=(1,)) for key in self._obs_keys})
+        return spaces.Box(jnp.array([self.spaces[key]['low'] for key in self._obs_keys]), jnp.array([self.spaces[key]['high'] for key in self._obs_keys]), shape=(len(self._obs_keys),))
 
     def state_space(self, params: EnvParams):
         return self.observation_space(params)
@@ -211,7 +227,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                     val = state.battery_state.soc_state.soc
 
                 case 'demand':
-                    val = Demand.get_demand(self.demand_data, state.time)
+                    val = Demand.get_demand(state.demand_data, state.time)
 
                 case 'aging':
                     val = state.battery_state.soh
@@ -248,14 +264,24 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         return obs
 
-    def reset_env(self, key: chex.PRNGKey, params: TEnvParams):
+    def reset_env(self, key: chex.PRNGKey, params: EnvParams):
+        # demand = jax.lax.cond(params.is_training,
+        #                       lambda: [self.dem_dict.values()][jax.random.choice(key, len(self.dem_dict))],
+        #                       lambda: [self.test_demand_dict.values()][jax.random.choice(key, len(self.test_demand_dict))])
         state = self.initial_state
+
+        demand = jax.lax.cond(params.is_training,
+                              lambda: Demand.build_demand_data(jax.random.choice(key, self.dem_matrix), timestep=params.env_step),
+                              lambda: Demand.build_demand_data(jax.random.choice(key, self.test_dem_matrix), timestep=params.env_step))
+        state = state.replace(demand_data=demand)
         obs = self.get_obs(state, params)
         return obs, state
 
     def step_env(self, key: chex.PRNGKey, state: EnvState, action: Union[int, float, chex.Array], params: EnvParams) -> Tuple[chex.Array, TEnvState, jnp.ndarray, jnp.ndarray, Dict[Any, Any]]:
 
-        obs_pre_step = self.get_obs(state, params)
+        # obs_pre_step = self.get_obs(state, params)
+
+        action = jnp.array(action).flatten()[0] #FIXME dava problemi
 
         new_timeframe = state.timeframe + params.env_step
         last_v = state.battery_state.electrical_state.v
@@ -265,7 +291,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         to_load = last_v * i_to_apply
 
-        to_trade = Generation.get_generation(self.generation_data, new_timeframe) - Demand.get_demand(self.demand_data, new_timeframe) - to_load
+        to_trade = Generation.get_generation(self.generation_data, new_timeframe) - Demand.get_demand(state.demand_data, new_timeframe) - to_load
         # to_trade = Generation.get_generation(self.generation_data, state.timeframe) - Demand.get_demand(self.demand_data, state.timeframe) - to_load
 
         # jax.debug.print('jax {i} dem: {gen}', i=state.iteration, gen=Demand.get_demand(self.demand_data, state.timeframe), ordered=True)
@@ -289,24 +315,26 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         # jax.debug.print('jax {i} jax r_trad: {gen}', i=state.iteration,
         #                 gen=r_trading, ordered=True)
 
-        r_clipping = jnp.abs((action - i_to_apply) * last_v)
+        r_clipping = -jnp.abs((action - i_to_apply) * last_v)
 
         r_deg = self._calc_deg_reward(old_soh, new_battery_state.soh, new_battery_state.nominal_cost, self._termination['min_soh'])
-        r_op = self._calc_op_reward(replacement_cost=new_battery_state.nominal_cost,
-                                    C_rated=new_battery_state.nominal_capacity * new_battery_state.nominal_voltage / 1000,
-                                    C=new_battery_state.c_max * new_battery_state.nominal_voltage / 1000,
-                                    DoD_rated=new_battery_state.nominal_dod,
-                                    L_rated=new_battery_state.nominal_lifetime,
-                                    v_rated=new_battery_state.nominal_voltage,
-                                    K_rated=new_battery_state.electrical_state.rc.resistance,
-                                    p=new_battery_state.electrical_state.p,
-                                    r=new_battery_state.electrical_state.r0,
-                                    soc=new_battery_state.soc_state.soc,
-                                    is_discharging=(new_battery_state.electrical_state.p <= 0))
+        # r_op = self._calc_op_reward(replacement_cost=new_battery_state.nominal_cost,
+        #                             C_rated=new_battery_state.nominal_capacity * new_battery_state.nominal_voltage / 1000,
+        #                             C=new_battery_state.c_max * new_battery_state.nominal_voltage / 1000,
+        #                             DoD_rated=new_battery_state.nominal_dod,
+        #                             L_rated=new_battery_state.nominal_lifetime,
+        #                             v_rated=new_battery_state.nominal_voltage,
+        #                             K_rated=new_battery_state.electrical_state.rc.resistance,
+        #                             p=new_battery_state.electrical_state.p,
+        #                             r=new_battery_state.electrical_state.r0,
+        #                             soc=new_battery_state.soc_state.soc,
+        #                             is_discharging=(new_battery_state.electrical_state.p <= 0))
+
+        r_op = 0
 
         # jax.debug.print('r_op {r}', r=r_op, ordered=True)
 
-        norm_r_trading, norm_r_op, norm_r_deg, norm_r_clipping = self._normalize_reward(new_battery_state, r_trading, r_op, r_deg, r_clipping, params)
+        norm_r_trading, norm_r_op, norm_r_deg, norm_r_clipping = self._normalize_reward(state, new_battery_state, r_trading, r_op, r_deg, r_clipping, params)
         weig_r_trading, weig_r_op, weig_r_deg, weig_r_clipping = (params.trading_coeff * norm_r_trading, params.op_cost_coeff * norm_r_op,
                                                                   params.deg_coeff * norm_r_deg, params.clip_action_coeff * norm_r_clipping)
 
@@ -318,7 +346,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         terminated = new_battery_state.soh <= self._termination['min_soh']
 
         truncated = jnp.logical_or(new_iteration >= self._termination['max_iterations'],
-                                   jnp.logical_or(jnp.logical_or(Demand.is_run_out_of_data(self.demand_data, new_timeframe),
+                                   jnp.logical_or(jnp.logical_or(Demand.is_run_out_of_data(state.demand_data, new_timeframe),
                                                                  Generation.is_run_out_of_data(self.generation_data, new_timeframe)),
                                                   jnp.logical_or(BuyingPrice.is_run_out_of_data(self.buying_price_data, new_timeframe),
                                                                  SellingPrice.is_run_out_of_data(self.selling_price_data, new_timeframe))),
@@ -344,7 +372,8 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                                 'r_op': weig_r_op,
                                 'r_deg': weig_r_deg,
                                 'r_clipping': weig_r_clipping},
-                'r_tot': r_tot}
+                'r_tot': r_tot,
+                'i_to_apply': i_to_apply}       #FIXME REMOVE
 
         return self.get_obs(new_state, params), new_state, r_tot, jnp.logical_or(terminated, truncated), info
 
@@ -368,9 +397,9 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                      ) -> float:
 
         # To prevent division by zero error
-        soc = jax.lax.cond(soc == 0,
+        soc = jax.lax.cond((soc == 0).flatten()[0],
                            lambda : 1e-6,
-                           lambda : soc)
+                           lambda : soc.flatten()[0])
 
         # Coefficient c_avai = c_bat
         c_bat = replacement_cost / (C_rated * DoD_rated * (0.9 * L_rated - 0.1))
@@ -396,10 +425,19 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         return - op_cost_term
 
-    def _normalize_reward(self, battery_state: BessState, r_trading, r_op, r_deg, r_clipping, params: EnvParams):
-        norm_r_trading = r_trading / params.trad_norm_term
-        norm_r_op = r_op / battery_state.nominal_cost
-        norm_r_clipping = r_clipping / jnp.maximum(jnp.abs(self.demand_data.max - self.generation_data.min),
-                                                   jnp.abs(self.generation_data.max - self.demand_data.min))
+    def _normalize_reward(self, state: EnvState, battery_state: BessState, r_trading, r_op, r_deg, r_clipping, params: EnvParams):
 
-        return norm_r_trading, norm_r_op, r_deg, norm_r_clipping
+        if self._use_reward_normalization:
+            norm_r_trading = r_trading / jnp.maximum(self.generation_data.max * self.selling_price_data.max,
+                                                     state.demand_data.max * self.buying_price_data.max)
+            norm_r_op = r_op / battery_state.nominal_cost
+            norm_r_clipping = r_clipping / jnp.maximum(jnp.abs(state.demand_data.max - self.generation_data.min),
+                                                       jnp.abs(self.generation_data.max - state.demand_data.min))
+
+            return norm_r_trading, norm_r_op, r_deg, norm_r_clipping
+
+        else:
+            return r_trading, r_op, r_deg, r_clipping
+
+    def eval(self, params: EnvParams) -> EnvParams:
+        return params.replace(is_training=False)
