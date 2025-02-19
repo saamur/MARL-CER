@@ -97,7 +97,7 @@ class BatteryEnergyStorageSystem:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def step(cls, state: BessFadingState, i:float, dt:float) -> BessFadingState:
+    def step(cls, state: BessFadingState, i:float, dt:float, t_amb: float) -> BessFadingState:
         new_electrical_state, v_out, _ = TheveninFadingModel.step_current_driven(state.electrical_state, i, dt)
         new_electrical_state, new_c_max = TheveninFadingModel.compute_parameter_fading(new_electrical_state, state.nominal_capacity)
 
@@ -105,7 +105,7 @@ class BatteryEnergyStorageSystem:
 
         dissipated_heat = TheveninFadingModel.compute_generated_heat(new_electrical_state)
 
-        new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=state.temp_ambient, dt=dt)
+        new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=t_amb, dt=dt)
 
         new_soh = new_c_max / state.nominal_capacity
 

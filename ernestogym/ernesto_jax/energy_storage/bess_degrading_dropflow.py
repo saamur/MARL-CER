@@ -107,14 +107,14 @@ class BatteryEnergyStorageSystem:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def step(cls, state: BessBolunDropflowState, i:float, dt:float) -> BessBolunDropflowState:
+    def step(cls, state: BessBolunDropflowState, i:float, dt:float, t_amb: float) -> BessBolunDropflowState:
         new_electrical_state, v_out, _ = TheveninModel.step_current_driven(state.electrical_state, i, dt)
 
         new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, state.nominal_capacity)
 
         dissipated_heat = TheveninModel.compute_generated_heat(new_electrical_state)
 
-        new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=state.temp_ambient, dt=dt)
+        new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=t_amb, dt=dt)
 
         new_aging_state, curr_soh = BolunDropflowModel.compute_soh(state.aging_state, curr_temp, state.temp_ambient, curr_soc, state.elapsed_time, state.iter % state.check_soh_every == 0)
 
