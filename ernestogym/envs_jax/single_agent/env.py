@@ -88,6 +88,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         dem_df = settings['demand']['data'].drop(columns=['delta_time'])
         # dem_dict = dem_df.to_dict(orient='list')
         dem_matrix_raw = jnp.array(dem_df.to_numpy().T)
+        dem_matrix_raw = jnp.concat([dem_matrix_raw, dem_matrix_raw, dem_matrix_raw, dem_matrix_raw], axis=1)
 
         gen_d = jnp.array(settings['generation']['data']['PV'])
         buy_d = jnp.array(settings['market']['data']['ask'])

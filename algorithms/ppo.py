@@ -53,6 +53,9 @@ class ActorCritic(nnx.Module):
         actor_mean = self.act_dense2(actor_mean)
         actor_mean = self.activation(actor_mean)
         actor_mean = self.act_dense3(actor_mean)
+
+        # actor_mean = nnx.sigmoid(actor_mean)
+
         pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(jnp.asarray(self.log_std)))
 
         critic = self.cri_dense1(x)
@@ -88,7 +91,7 @@ def make_train(config, env, env_params):
     # env, env_params = my_env_creator(config['my_params'], config['battery_type'], config['demand_profile'])
     env = LogWrapper(env)
     # env = ClipAction(env, low=env_params.i_min_action, high=env_params.i_max_action)
-    env = VecEnv(env)       #todo da togliere eventually
+    env = VecEnv(env)
     if config["NORMALIZE_ENV"]:
         env = NormalizeVecObservation(env)
         env = NormalizeVecReward(env, config["GAMMA"])
@@ -158,6 +161,12 @@ def train(env, env_params, config, train_state, rng):
             obsv, env_state, reward, done, info = env.step(
                 rng_step, env_state, action, env_params
             )
+
+            # jax.debug.print('obs: {o}', o=obsv, ordered=True)
+
+            # obsv = obsv / jnp.array([100., 1., 100., 100., 0.0001, 0.0001, 1., 1., 1., 1.])
+
+            # jax.debug.print('obs_norm: {o}', o=obsv, ordered=True)
 
             info['action'] = action
 
@@ -315,7 +324,7 @@ def train(env, env_params, config, train_state, rng):
 
             jax.debug.callback(callback, metric)
 
-        runner_state = (train_state, env_state, last_obs, rng)    #todo rimettere
+        runner_state = (train_state, env_state, last_obs, rng)
 
         return runner_state, metric
 

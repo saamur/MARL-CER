@@ -37,6 +37,7 @@ class BolunDropflowState:
     soc_mean: float
     temp_battery_mean: float
     cum_sum_temp_history: jnp.ndarray
+    cum_sum_soc_history: jnp.ndarray
     n_steps: int
 
     dropflow_state: DropflowState
@@ -76,6 +77,7 @@ class BolunDropflowModel:
                                   soc_mean=1.,
                                   temp_battery_mean=0.,
                                   cum_sum_temp_history=jnp.zeros(max_length_history+1),
+                                  cum_sum_soc_history=jnp.zeros(max_length_history + 1),
                                   n_steps=0,
                                   dropflow_state=dropflow_state,
                                   f_cyc=0.,
@@ -94,12 +96,15 @@ class BolunDropflowModel:
         new_dropflow_state = Dropflow.add_point(state.dropflow_state, soc)
 
         new_cum_sum_temp_history = state.cum_sum_temp_history.at[state.n_steps+1].set(state.cum_sum_temp_history[state.n_steps] + temp_battery)
+        new_cum_sum_soc_history = state.cum_sum_soc_history.at[state.n_steps + 1].set(state.cum_sum_soc_history[state.n_steps] + soc)
         new_n_steps = state.n_steps + 1
+
         new_temp_battery_mean = state.temp_battery_mean + (temp_battery - state.temp_battery_mean) / new_n_steps
         new_soc_mean = state.soc_mean + (soc - state.soc_mean) / new_n_steps
 
         new_state = state.replace(dropflow_state=new_dropflow_state,
                                   cum_sum_temp_history=new_cum_sum_temp_history,
+                                  cum_sum_soc_history=new_cum_sum_soc_history,
                                   n_steps=new_n_steps,
                                   temp_battery_mean=new_temp_battery_mean,
                                   soc_mean=new_soc_mean)
@@ -115,6 +120,9 @@ class BolunDropflowModel:
             # jax.debug.print('JAX k_t: {k_t}, t: {t}', k_t=state.time_stress_model.k_t,
             #                 t=elapsed_time, ordered=True)
 
+            # soc_mean = state.cum_sum_soc_history[state.n_steps] / state.n_steps
+            # temp_battery_mean = state.cum_sum_temp_history[state.n_steps] / state.n_steps
+
             f_cal = (temperature_stress(state.temp_stress_model.k_temp, state.temp_battery_mean, state.temp_stress_model.temp_ref) *
                      soc_stress(state.soc_stress_model.k_soc, state.soc_mean, state.soc_stress_model.soc_ref) *  # fixme siamo sicuri che devo usare la media del soc?
                      time_stress(state.time_stress_model.k_t, elapsed_time))
@@ -129,6 +137,7 @@ class BolunDropflowModel:
             # temp_means = jnp.sum(jnp.where(mask, state.temp_history[:, None], 0), axis=0)
 
             temp_means = (state.cum_sum_temp_history[i_end] - state.cum_sum_temp_history[i_start]) / (i_end - i_start)
+            soc_means = (state.cum_sum_soc_history[i_end] - state.cum_sum_soc_history[i_start]) / (i_end - i_start)
 
             new_iter_complete_f_cyc, incomplete_f_cyc = cls.compute_cyclic_aging(state,
                                                                                  temp_ambient=temp_ambient,
