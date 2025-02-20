@@ -1,11 +1,8 @@
-from ernestogym.ernesto_jax.energy_storage.battery_models.electrical import ElectricalModelState
-from ernestogym.ernesto_jax.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
-from ernestogym.ernesto_jax.energy_storage.battery_models.soc import SOCModelState, SOCModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.electrical.electrical import ElectricalModelState
+from ernestogym.ernesto_jax.energy_storage.battery_models.thermal.thermal import ThermalModelState
+from ernestogym.ernesto_jax.energy_storage.battery_models.soc import SOCModelState
 
 from flax import struct
-from functools import partial
-import jax
-import jax.numpy as jnp
 
 
 @struct.dataclass

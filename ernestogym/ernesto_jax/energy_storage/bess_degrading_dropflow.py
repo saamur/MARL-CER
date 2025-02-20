@@ -1,7 +1,7 @@
-from ernestogym.ernesto_jax.energy_storage.battery_models.electrical import ElectricalModelState, TheveninModel
-from ernestogym.ernesto_jax.energy_storage.battery_models.thermal import ThermalModelState, R2CThermalModel
-from ernestogym.ernesto_jax.energy_storage.battery_models.soc import SOCModelState, SOCModel
-from ernestogym.ernesto_jax.energy_storage.battery_models.bolun_dropflow import BolunDropflowModel, BolunDropflowState
+from ernestogym.ernesto_jax.energy_storage.battery_models.electrical.electrical import TheveninModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.thermal.thermal import R2CThermalModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.soc import SOCModel
+from ernestogym.ernesto_jax.energy_storage.battery_models.aging.bolun_dropflow import BolunDropflowModel, BolunDropflowState
 from ernestogym.ernesto_jax.energy_storage.bess import BessState
 
 from flax import struct
@@ -108,13 +108,13 @@ class BatteryEnergyStorageSystem:
     @classmethod
     @partial(jax.jit, static_argnums=[0])
     def step(cls, state: BessBolunDropflowState, i:float, dt:float, t_amb: float) -> BessBolunDropflowState:
-        new_electrical_state, v_out, _ = TheveninModel.step_current_driven(state.electrical_state, i, dt)
+        new_electrical_state, v_out, _ = TheveninModel.step_current_driven(state.electrical_state, i, dt=dt, temp=state.thermal_state.temp, soc=state.soc_state.soc)
+
+        dissipated_heat = TheveninModel.compute_generated_heat(new_electrical_state, temp=state.thermal_state.temp, soc=state.soc_state.soc)
 
         new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, state.nominal_capacity)
 
-        dissipated_heat = TheveninModel.compute_generated_heat(new_electrical_state)
-
-        new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=t_amb, dt=dt)
+        new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=t_amb, soc=curr_soc, dt=dt)
 
         new_aging_state, curr_soh = BolunDropflowModel.compute_soh(state.aging_state, curr_temp, state.temp_ambient, curr_soc, state.elapsed_time, state.iter % state.check_soh_every == 0)
 

@@ -5,6 +5,10 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
+from ernestogym.ernesto_jax.energy_storage.battery_models.electrical.ecm_components.resistor import Resistor, ResistorData
+from ernestogym.ernesto_jax.energy_storage.battery_models.electrical.ecm_components.rc_parallel import RCParallel, RCData
+from ernestogym.ernesto_jax.energy_storage.battery_models.electrical.ecm_components.ocv_generator import OCVGenerator, OCVData
+
 @struct.dataclass
 class RCState:
     resistance_nominal: float
@@ -15,11 +19,11 @@ class RCState:
 
 @struct.dataclass
 class ElectricalModelState:
-    r0_nominal: float
-    r0: float
+    r0_nominal: ResistorData
+    r0: ResistorData
 
-    rc: RCState
-    ocv_potential: float
+    rc: RCData
+    ocv_generator: OCVData
     is_active: bool
 
     v: float
@@ -31,30 +35,21 @@ class ElectricalModelState:
 class TheveninModel:
 
     @classmethod
-    # @partial(jax.jit, static_argnums=[0])
     def get_init_state(cls,
                        components: Dict,
                        inits: Dict,
                        sign_convention: str):
 
-        assert components['r0']['selected_type'] == 'scalar'
-        r0 = components['r0']['scalar']
-        r0_nominal = r0
+        r0_nominal = Resistor.get_initial_state(components['r0'])
 
-        assert components['r1']['selected_type'] == 'scalar'
-        assert components['c']['selected_type'] == 'scalar'
-        rc = RCState(resistance_nominal=components['r1']['scalar'],
-                     resistance=components['r1']['scalar'],
-                     capacity=components['c']['scalar'],
-                     i_resistance=0.)    # FIXME 0 giusto?
+        rc = RCParallel.get_initial_state(components['r1'], components['c'])
 
-        assert components['v_ocv']['selected_type'] == 'scalar'
-        ocv_potential = components['v_ocv']['scalar']
+        ocv_generator = OCVGenerator.get_initial_state(components['v_ocv'])
 
         return ElectricalModelState(r0_nominal=r0_nominal,
-                                    r0=r0,
+                                    r0=r0_nominal,
                                     rc=rc,
-                                    ocv_potential=ocv_potential,
+                                    ocv_generator=ocv_generator,
                                     is_active= sign_convention == 'active',
                                     v=inits['voltage'],
                                     i=inits['current'],
@@ -63,12 +58,12 @@ class TheveninModel:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def step_current_driven(cls, state: ElectricalModelState, i_load:float, dt: float):
+    def step_current_driven(cls, state: ElectricalModelState, i_load:float, temp: float, soc: float, dt: float):
 
-        r0 = state.r0
-        r1 = state.rc.resistance
-        c = state.rc.capacity
-        v_ocv = state.ocv_potential
+        r0 = Resistor.get_resistence(state.r0, temp, soc)
+        r1 = RCParallel.get_resistence(state.rc, temp, soc)
+        c = RCParallel.get_capacity(state.rc, temp, soc)
+        v_ocv = OCVGenerator.get_potential(state.ocv_generator, temp, soc)
 
         i_load = jnp.where(state.is_active, i_load, -i_load)
 
@@ -90,6 +85,6 @@ class TheveninModel:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def compute_generated_heat(cls, state:ElectricalModelState):
-        return (state.r0 * state.i**2 +
-                state.rc.resistance * state.rc.i_resistance**2)
+    def compute_generated_heat(cls, state:ElectricalModelState, temp: float, soc: float):
+        return (Resistor.get_resistence(state.r0, temp=temp, soc=soc) * state.i**2 +
+                Resistor.get_resistence(state.rc.r, temp=temp, soc=soc) * state.rc.i_resistance**2)
