@@ -4,6 +4,8 @@ from flax import nnx
 from flax import struct
 from functools import partial
 
+from jax_tqdm import scan_tqdm
+
 from flax.nnx.nn.initializers import constant, orthogonal, glorot_normal
 from flax.nnx import GraphDef, GraphState
 import numpy as np
@@ -12,7 +14,6 @@ from typing import Sequence, NamedTuple, Any
 import distrax
 from .wrappers import (
     LogWrapper,
-    BraxGymnaxWrapper,
     VecEnv,
     NormalizeVecObservation,
     NormalizeVecReward,
@@ -20,22 +21,43 @@ from .wrappers import (
 )
 
 class ActorCritic(nnx.Module):
-    def __init__(self, in_features, out_features, activation, rngs):
-        if activation == 'relu':
-            self.activation = nnx.relu
-        else:
-            self.activation = nnx.tanh
+    def __init__(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None):
 
-        self.act_dense1 = nnx.Linear(in_features, 64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs)
-        self.act_dense2 = nnx.Linear(64, 64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs)
-        self.act_dense3 = nnx.Linear(64, out_features, kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs)
+        if act_net_arch is None:
+            if net_arch is None:
+                raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
+            act_net_arch = net_arch
+        if cri_net_arch is None:
+            if net_arch is None:
+                raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
+            cri_net_arch = net_arch
+
+        act_net_arch = list(act_net_arch)
+        cri_net_arch = list(cri_net_arch)
+
+        if activation == 'relu':
+            activation = nnx.relu
+        else:
+            activation = nnx.tanh
+
+        act_net_arch = [in_features] + act_net_arch + [out_features]
+
+        self.act_layers = []
+        for i in range(len(act_net_arch) - 2):
+            self.act_layers.append(nnx.Linear(act_net_arch[i], act_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+            self.act_layers.append(activation)
+        self.act_layers.append(nnx.Linear(act_net_arch[-2], act_net_arch[-1], kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
+
 
         self.log_std = nnx.Param(jnp.zeros(out_features))
 
-        self.cri_dense1 = nnx.Linear(in_features, 64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs)
-        self.cri_dense2 = nnx.Linear(64, 64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs)
-        self.cri_dense3 = nnx.Linear(64, 1, kernel_init=orthogonal(1.), bias_init=constant(0.), rngs=rngs)
+        cri_net_arch = [in_features] + cri_net_arch + [1]
 
+        self.cri_layers = []
+        for i in range(len(cri_net_arch) - 2):
+            self.cri_layers.append(nnx.Linear(cri_net_arch[i], cri_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+            self.cri_layers.append(activation)
+        self.cri_layers.append(nnx.Linear(cri_net_arch[-2], cri_net_arch[-1], kernel_init=orthogonal(1.), bias_init=constant(0.), rngs=rngs))
 
         # self.act_dense1 = nnx.Linear(in_features, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
         # self.act_dense2 = nnx.Linear(64, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
@@ -48,23 +70,19 @@ class ActorCritic(nnx.Module):
         # self.cri_dense3 = nnx.Linear(64, 1, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
 
     def __call__(self, x):
-        actor_mean = self.act_dense1(x)
-        actor_mean = self.activation(actor_mean)
-        actor_mean = self.act_dense2(actor_mean)
-        actor_mean = self.activation(actor_mean)
-        actor_mean = self.act_dense3(actor_mean)
 
-        # actor_mean = nnx.sigmoid(actor_mean)
+        actor_mean = x
+        for layer in self.act_layers:
+            actor_mean = layer(actor_mean)
 
         pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(jnp.asarray(self.log_std)))
 
-        critic = self.cri_dense1(x)
-        critic = self.activation(critic)
-        critic = self.cri_dense2(critic)
-        critic = self.activation(critic)
-        critic = self.cri_dense3(critic)
+        critic = x
+        for layer in self.cri_layers:
+            critic = layer(critic)
 
         return pi, jnp.squeeze(critic, axis=-1)
+
 
 class Transition(NamedTuple):
     done: jnp.ndarray
@@ -87,8 +105,6 @@ def make_train(config, env, env_params):
     config["MINIBATCH_SIZE"] = (
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
-    # env, env_params = BraxGymnaxWrapper(config["ENV_NAME"]), None
-    # env, env_params = my_env_creator(config['my_params'], config['battery_type'], config['demand_profile'])
     env = LogWrapper(env)
     # env = ClipAction(env, low=env_params.i_min_action, high=env_params.i_max_action)
     env = VecEnv(env)
@@ -108,7 +124,13 @@ def make_train(config, env, env_params):
 
     _rng = nnx.Rngs(123)
     network = ActorCritic(
-        env.observation_space(env_params).shape[0], env.action_space(env_params).shape[0], activation=config["ACTIVATION"], rngs=_rng
+        env.observation_space(env_params).shape[0],
+        env.action_space(env_params).shape[0],
+        activation=config["ACTIVATION"],
+        net_arch=config.get("NET_ARCH"),
+        act_net_arch=config.get("ACT_NET_ARCH"),
+        cri_net_arch=config.get("CRI_NET_ARCH"),
+        rngs=_rng
     )
 
     if config["ANNEAL_LR"]:
@@ -141,6 +163,7 @@ def train(env, env_params, config, train_state, rng):
     obsv, env_state = env.reset(reset_rng, env_params)
 
     # TRAIN LOOP
+    @scan_tqdm(config["NUM_UPDATES"], print_rate=5)
     def _update_step(runner_state, unused):
         # COLLECT TRAJECTORIES
         def _env_step(runner_state, unused):
@@ -207,10 +230,6 @@ def train(env, env_params, config, train_state, rng):
                 reverse=True,
                 unroll=16,
             )
-
-            # advantages = jax.lax.cond(config["NORMALIZE_ADVANTAGES"],
-            #                           lambda : (advantages - advantages.mean()) / (advantages.std() + 1e-8),
-            #                           lambda : advantages)
 
             return advantages, advantages + traj_batch.value
 
@@ -332,7 +351,7 @@ def train(env, env_params, config, train_state, rng):
     runner_state = (train_state, env_state, obsv, _rng)
 
     runner_state, metric = jax.lax.scan(
-        _update_step, runner_state, None, config["NUM_UPDATES"]
+        _update_step, runner_state, jnp.arange(config["NUM_UPDATES"])
     )
 
     return {"runner_state": runner_state, "metrics": metric}
