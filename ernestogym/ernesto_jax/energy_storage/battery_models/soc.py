@@ -19,8 +19,8 @@ class SOCModel:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def compute_soc(cls, state: SOCModelState, i, dt, new_c_max):
-        new_soc = state.soc + i / (new_c_max * 3600) * dt
+    def compute_soc(cls, state: SOCModelState, i, dt, c_max):
+        new_soc = state.soc + i / (c_max * 3600) * dt
         new_soc = jnp.clip(new_soc, 0, 1)
 
         new_state = state.replace(soc=new_soc)

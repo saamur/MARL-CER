@@ -11,6 +11,7 @@ from ernestogym.ernesto_jax.energy_storage.battery_models.lookup_table_maker imp
 @struct.dataclass
 class DvdtData:
     lookup_table: jnp.ndarray
+    soc_ref: float
     soc_step: float
 
 @struct.dataclass
@@ -29,6 +30,7 @@ class R2CThermalModel:
     def get_init_state(cls, components_setting: Dict, temp):
 
         if components_setting['dv_dT']['selected_type'] == 'scalar':
+            soc_ref = 0.
             soc_step = 1.
             lookup_table = jnp.array([components_setting['dv_dT']['scalar']])
         elif components_setting['dv_dT']['selected_type'] == 'lookup':
@@ -37,12 +39,12 @@ class R2CThermalModel:
                                  components_setting['dv_dT']['lookup']['outputs']]).T
             else:
                 data = components_setting['dv_dT']['lookup']['table']
-            lookup_table, soc_step = build_grid_for_lookup(data)
+            lookup_table, soc_ref, soc_step = build_grid_for_lookup(data)
             lookup_table = jnp.asarray(lookup_table)
         else:
             raise ValueError('\'selected_type\' must be \'scalar\' or \'lookup\'')
 
-        dvdt_data = DvdtData(lookup_table=lookup_table, soc_step=soc_step)
+        dvdt_data = DvdtData(lookup_table=lookup_table, soc_ref=soc_ref, soc_step=soc_step)
 
         return ThermalModelState(c_term=components_setting['c_term']['scalar'],
                                  r_cond=components_setting['r_cond']['scalar'],
@@ -55,7 +57,7 @@ class R2CThermalModel:
     @partial(jax.jit, static_argnums=[0])
     def compute_temp(cls, state: ThermalModelState, q, i, T_amb, soc, dt):
 
-        dv_dT = get_interpolation_1d(state.dv_dT.lookup_table, state.dv_dT.soc_step, soc)
+        dv_dT = get_interpolation_1d(state.dv_dT.lookup_table, state.dv_dT.soc_ref, state.dv_dT.soc_step, soc)
 
         term_1 = state.c_term / dt * state.temp
         term_2 = T_amb / (state.r_cond + state.r_conv)

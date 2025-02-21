@@ -55,9 +55,9 @@ def parameter_generator(battery_options: str = BATTERY_OPTIONS,
     params = {'battery': battery_params['battery'],
               'input_var': input_var,
               'models_config': models_config,
-              'demand': {'data_train': read_csv(world_settings['demand']['path_train']),
-                         'data_test': read_csv(world_settings['demand']['path_test']),
+              'demand': {'data': read_csv(world_settings['demand']['path']),
                          'timestep': world_settings['demand']['timestep'],
+                         'test_profiles': world_settings['demand']['test_profiles'],
                          'data_usage': world_settings['demand']['data_usage']}}
     
     if replacement_cost is not None:

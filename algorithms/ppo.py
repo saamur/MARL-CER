@@ -21,7 +21,7 @@ from .wrappers import (
 )
 
 class ActorCritic(nnx.Module):
-    def __init__(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None):
+    def __init__(self, in_features: int, out_features: int, activation: bool, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, add_logistic_to_actor: bool = False):
 
         if act_net_arch is None:
             if net_arch is None:
@@ -37,8 +37,10 @@ class ActorCritic(nnx.Module):
 
         if activation == 'relu':
             activation = nnx.relu
-        else:
+        elif activation == 'tanh':
             activation = nnx.tanh
+        else:
+            raise ValueError("'activation' must be 'relu' or 'tanh'")
 
         act_net_arch = [in_features] + act_net_arch + [out_features]
 
@@ -47,7 +49,8 @@ class ActorCritic(nnx.Module):
             self.act_layers.append(nnx.Linear(act_net_arch[i], act_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
             self.act_layers.append(activation)
         self.act_layers.append(nnx.Linear(act_net_arch[-2], act_net_arch[-1], kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
-
+        if add_logistic_to_actor:
+            self.act_layers.append(nnx.sigmoid)
 
         self.log_std = nnx.Param(jnp.zeros(out_features))
 
@@ -98,6 +101,18 @@ class TrainState:
     graph_def: GraphDef
     state: GraphState
 
+def construct_net_from_config(config, rng):
+    return ActorCritic(
+    config["OBSERVATION_SPACE_SIZE"],
+    config["ACTION_SPACE_SIZE"],
+    activation=config["ACTIVATION"],
+    net_arch=config.get("NET_ARCH"),
+    act_net_arch=config.get("ACT_NET_ARCH"),
+    cri_net_arch=config.get("CRI_NET_ARCH"),
+    add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
+    rngs=rng
+)
+
 def make_train(config, env, env_params):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
@@ -105,6 +120,10 @@ def make_train(config, env, env_params):
     config["MINIBATCH_SIZE"] = (
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
+
+    config["ACTION_SPACE_SIZE"] = env.action_space(env_params).shape[0]
+    config["OBSERVATION_SPACE_SIZE"] = env.observation_space(env_params).shape[0]
+
     env = LogWrapper(env)
     # env = ClipAction(env, low=env_params.i_min_action, high=env_params.i_max_action)
     env = VecEnv(env)
@@ -123,15 +142,7 @@ def make_train(config, env, env_params):
 
 
     _rng = nnx.Rngs(123)
-    network = ActorCritic(
-        env.observation_space(env_params).shape[0],
-        env.action_space(env_params).shape[0],
-        activation=config["ACTIVATION"],
-        net_arch=config.get("NET_ARCH"),
-        act_net_arch=config.get("ACT_NET_ARCH"),
-        cri_net_arch=config.get("CRI_NET_ARCH"),
-        rngs=_rng
-    )
+    network = construct_net_from_config(config, _rng)
 
     if config["ANNEAL_LR"]:
         tx = optax.chain(

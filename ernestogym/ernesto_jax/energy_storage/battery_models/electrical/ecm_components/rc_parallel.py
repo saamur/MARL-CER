@@ -1,10 +1,6 @@
-from logging import captureWarnings
-from string import capwords
-
 from flax import struct
 from functools import partial
 import jax
-import jax.numpy as jnp
 
 from ernestogym.ernesto_jax.energy_storage.battery_models.electrical.ecm_components.resistor import Resistor, ResistorData
 from ernestogym.ernesto_jax.energy_storage.battery_models.electrical.ecm_components.capacitor import Capacitor, CapacitorData

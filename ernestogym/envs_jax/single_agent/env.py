@@ -304,7 +304,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         #                             soc=new_battery_state.soc_state.soc,
         #                             is_discharging=(new_battery_state.electrical_state.p <= 0))
 
-        r_op = 0
+        r_op = 0.
 
         norm_r_trading, norm_r_op, norm_r_deg, norm_r_clipping = self._normalize_reward(state, new_battery_state, r_trading, r_op, r_deg, r_clipping, params)
         weig_r_trading, weig_r_op, weig_r_deg, weig_r_clipping = (params.trading_coeff * norm_r_trading, params.op_cost_coeff * norm_r_op,
@@ -369,9 +369,9 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                      ) -> float:
 
         # To prevent division by zero error
-        soc = jax.lax.cond((soc == 0).flatten()[0],
+        soc = jax.lax.cond((soc == 0), #.flatten()[0],
                            lambda : 1e-6,
-                           lambda : soc.flatten()[0])
+                           lambda : soc)#.flatten()[0])
 
         # Coefficient c_avai = c_bat
         c_bat = replacement_cost / (C_rated * DoD_rated * (0.9 * L_rated - 0.1))
@@ -383,16 +383,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                              lambda : (1 * (r + K_rated / (0.9 - soc)) / v_rated ** 2 * p ** 2 +
                                        1 * C * K_rated * (1 - soc) / (soc * v_rated ** 2) * p))
 
-        # h_bat = jax.lax.select(is_discharging,
-        #                      jnp.abs(p) + (1 * (r + K_rated / soc) / v_rated ** 2 * p ** 2 +
-        #                                    1 * C * K_rated * (1 - soc) / (soc * v_rated ** 2) * p),
-        #                      (1 * (r + K_rated / (0.9 - soc)) / v_rated ** 2 * p ** 2 +
-        #                       1 * C * K_rated * (1 - soc) / (soc * v_rated ** 2) * p))
-
         # Dividing by 1e3 to convert because it is in €/kWh, to get the cost in €/Wh
-
-        # jax.debug.print('jax c_bat {c}', c=c_bat, ordered=True)
-        # jax.debug.print('jax h_bat {c}', c=h_bat, ordered=True)
         op_cost_term = c_bat * h_bat / 1e3
 
         return - op_cost_term
