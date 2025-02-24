@@ -1,4 +1,5 @@
 import chex
+import numpy as np
 from flax import struct
 import jax
 import jax.numpy as jnp
@@ -127,29 +128,34 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         self.spaces['soc'] = {'low': 0., 'high': 1.}
         self.spaces['demand'] = {'low': 0., 'high': jnp.inf}
         self._obs_keys = ['temperature', 'soc', 'demand']
+        obs_is_sequence = [True, True, True]
 
         # Add optional 'State of Health' in observation space
         if settings['soh']:
             # spaces['soh'] = Box(low=0, high=1, shape=(1,), dtype=np.float32)
             self._obs_keys.append('soh')
             self.spaces['soh'] = {'low': 0., 'high': 1.}
+            obs_is_sequence.append(True)
 
         # Add optional 'generation' in observation space
         if self.generation_data is not None:
             # spaces['generation'] = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)s
             self._obs_keys.append('generation')
             self.spaces['generation'] = {'low': 0., 'high': jnp.inf}
+            obs_is_sequence.append(True)
 
         # Add optional 'bid' and 'ask' of energy market in observation space
         if self.buying_price_data is not None:
             # spaces['buying_price'] = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
             self._obs_keys.append('buying_price')
             self.spaces['buying_price'] = {'low': 0., 'high': jnp.inf}
+            obs_is_sequence.append(True)
 
         if self.selling_price_data is not None:
             # spaces['selling_price'] = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
             self._obs_keys.append('selling_price')
             self.spaces['selling_price'] = {'low': 0., 'high': jnp.inf}
+            obs_is_sequence.append(True)
 
         if settings['day_of_year']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
@@ -157,6 +163,8 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             self._obs_keys.append('cos_day_of_year')
             self.spaces['sin_day_of_year'] = {'low': -1, 'high': 1}
             self.spaces['cos_day_of_year'] = {'low': -1, 'high': 1}
+            obs_is_sequence.append(False)
+            obs_is_sequence.append(False)
 
         if settings['seconds_of_day']:
             # spaces['seconds_of_day'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
@@ -164,12 +172,22 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             self._obs_keys.append('cos_seconds_of_day')
             self.spaces['sin_seconds_of_day'] = {'low': -1, 'high': 1}
             self.spaces['cos_seconds_of_day'] = {'low': -1, 'high': 1}
+            obs_is_sequence.append(False)
+            obs_is_sequence.append(False)
 
         if settings['energy_level']:
             self._obs_keys.append('energy_level')
             min_energy = battery_state.nominal_capacity * battery_state.soc_state.soc_min * battery_state.v_max
             max_energy = battery_state.nominal_capacity * battery_state.soc_state.soc_max * battery_state.v_min
             self.spaces['energy_level'] = {'low': min_energy, 'high': max_energy}
+            obs_is_sequence.append(True)
+
+        indices = np.argsort(np.logical_not(obs_is_sequence))
+
+        self._obs_keys = [self._obs_keys[i] for i in indices]
+
+        self.num_obs_sequences = np.sum(obs_is_sequence)
+
 
         self._obs_idx = {key: i for i, key in enumerate(self._obs_keys)}
 
@@ -305,6 +323,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         #                             is_discharging=(new_battery_state.electrical_state.p <= 0))
 
         r_op = 0.
+        # r_deg = 0.
 
         norm_r_trading, norm_r_op, norm_r_deg, norm_r_clipping = self._normalize_reward(state, new_battery_state, r_trading, r_op, r_deg, r_clipping, params)
         weig_r_trading, weig_r_op, weig_r_deg, weig_r_clipping = (params.trading_coeff * norm_r_trading, params.op_cost_coeff * norm_r_op,
@@ -345,6 +364,11 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                                 'r_deg': weig_r_deg,
                                 'r_clipping': weig_r_clipping},
                 'r_tot': r_tot,
+                'generation':Generation.get_generation(self.generation_data, new_timeframe),
+                'demand': Demand.get_demand(state.demand_data, new_timeframe),
+                'buy_price': BuyingPrice.get_buying_price(self.buying_price_data, new_timeframe),
+                'sell_price': SellingPrice.get_selling_price(self.selling_price_data, new_timeframe),
+                'p': new_battery_state.electrical_state.p,
                 'i_to_apply': i_to_apply}       #FIXME REMOVE
 
         return self.get_obs(new_state, params), new_state, r_tot, jnp.logical_or(terminated, truncated), info

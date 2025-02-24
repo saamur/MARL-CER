@@ -7,6 +7,7 @@ import yaml
 from pint import UnitRegistry
 from ernestogym.ernesto_jax.utils import read_csv
 from ernestogym.ernesto_jax import read_yaml, validate_yaml_parameters
+from os import listdir
 
 BATTERY_OPTIONS = "ernestogym/ernesto/data/battery/cell.yaml"
 INPUT_VAR = 'power'     # 'power'/'current'/'voltage'
@@ -19,8 +20,10 @@ WORLD = "ernestogym/envs/single_agent/world_fading.yaml"
 ureg = UnitRegistry(autoconvert_offset_to_baseunit=True)
 
 
-def parameter_generator(battery_options: List[str] = BATTERY_OPTIONS,
+def parameter_generator(battery_options: str= BATTERY_OPTIONS,
                         world_options: str = WORLD,
+                        battery_houses: str = 'aaaaaa',
+                        passive_houses: str = 'aaaaaa',
                         input_var: str = INPUT_VAR,
                         electrical_model: List[str] = ECM,
                         thermal_model: List[str] = R2C_THERMAL,
@@ -46,12 +49,50 @@ def parameter_generator(battery_options: List[str] = BATTERY_OPTIONS,
         world_settings = yaml.safe_load(fin)
 
     # Battery parameters retrieved with ErNESTO APIs.
-    battery_params = read_yaml(battery_options, yaml_type='battery_options', bypass_check=bypass_yaml_schema)
-    battery_params['battery']['params'] = validate_yaml_parameters(battery_params['battery']['params'])
+
+    batteries_params = []
+    for path in listdir(battery_options):
+        battery = read_yaml(path, yaml_type='battery_options', bypass_check=bypass_yaml_schema)
+        battery['battery']['params'] = validate_yaml_parameters(battery['battery']['params'])
+        batteries_params.append(battery)
+
+    electrical_models = []
+    for path in listdir(electrical_model):
+        elec = read_yaml(path, yaml_type='model', bypass_check=bypass_yaml_schema)
+        electrical_models.append(elec)
+
+    thermal_models = []
+    for path in listdir(thermal_model):
+        ther = read_yaml(path, yaml_type='model', bypass_check=bypass_yaml_schema)
+        thermal_models.append(ther)
 
     # Battery submodel configuration retrieved with ErNESTO APIs.
-    models_config = [read_yaml(electrical_model, yaml_type='model', bypass_check=bypass_yaml_schema),
-                     read_yaml(thermal_model, yaml_type='model', bypass_check=bypass_yaml_schema)]
+    # models_config = [read_yaml(electrical_model, yaml_type='model', bypass_check=bypass_yaml_schema),
+    #                  read_yaml(thermal_model, yaml_type='model', bypass_check=bypass_yaml_schema)]
+
+    battery_houses_data = [read_yaml(path, yaml_type='model', bypass_check=bypass_yaml_schema) for path in listdir(battery_houses)]
+    passive_houses_data = [read_yaml(path, yaml_type='model', bypass_check=bypass_yaml_schema) for path in listdir(passive_houses)]
+
+    demand = read_csv(world_settings['demand']['path'])
+    TO_FILL = 'a'
+
+    params = {'batteries': [batteries_params[i].update({'models': [electrical_models[i], thermal_models[i]]}) for i in range(len(batteries_params))],
+              'input_var': input_var,
+              'demands_battery_houses': [{'data': demand[battery_houses_data[i]['demand_profile']],
+                                          'timestep': world_settings['demand']['timestep']} for i in range(len(batteries_params))],
+              'generations_battery_houses': TO_FILL,
+              'selling_prices_battery_houses': TO_FILL,
+              'buying_prices_battery_houses': TO_FILL,
+              'demands_passive_houses': [{'data': demand[battery_houses_data[i]['demand_profile']],
+                                          'timestep': world_settings['demand']['timestep']} for i in range(len(batteries_params))],
+              'generations_passive_houses': TO_FILL,
+              'selling_prices_passive_houses': TO_FILL,
+              'buying_prices_passive_houses': TO_FILL,
+
+              'battery_agents_observations': world_settings['battery_observations'],
+              'rec_agent_observations': world_settings['rec_agent_observations']
+
+    }
 
     params = {'battery': battery_params['battery'],
               'input_var': input_var,

@@ -68,12 +68,26 @@ class TheveninModel:
         i_load = jnp.where(state.is_active, i_load, -i_load)
 
         v_r0 = r0 * i_load
-        v_rc = (state.v_rc / dt + i_load /c) / (1/dt + 1/ (c*r1))
+
+        #######################
+
+        # v_rc = (state.v_rc / dt + i_load /c) / (1/dt + 1/ (c*r1))
+
+        # v = v_ocv - v_r0 - v_rc
+        #
+        # i_r1 = v_rc / r1
+
+        ###############################
+
+        e = jnp.exp(-dt/(r1*c))
+
+        v_rc = r1 * i_load * (1 - e) + e * state.v_rc          #1/exp * (r1 * i_load * (exp - 1) + state.v_rc)
 
         v = v_ocv - v_r0 - v_rc
 
         i_r1 = v_rc / r1
-        # i_c = i_load - i_r1       #TODO non penso serva
+
+        # jax.debug.print('voltage: {v}', v=v, ordered=True)
 
         power = v * i_load
 
@@ -82,6 +96,12 @@ class TheveninModel:
         new_state = state.replace(v=v, i=i_load, v_rc=v_rc, rc=state.rc.replace(i_resistance=i_r1), p=power)
 
         return new_state, v, i_load
+
+    @classmethod
+    @partial(jax.jit, static_argnums=[0])
+    def step_power_driven(cls, state: ElectricalModelState, p_load: float, temp: float, soc: float, dt: float):
+
+        return cls.step_current_driven(state, p_load/state.v, temp, soc, dt)
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])

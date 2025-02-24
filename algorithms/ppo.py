@@ -4,7 +4,7 @@ from flax import nnx
 from flax import struct
 from functools import partial
 
-from jax_tqdm import scan_tqdm
+from jax_tqdm import scan_tqdm, loop_tqdm
 
 from flax.nnx.nn.initializers import constant, orthogonal, glorot_normal
 from flax.nnx import GraphDef, GraphState
@@ -35,12 +35,7 @@ class ActorCritic(nnx.Module):
         act_net_arch = list(act_net_arch)
         cri_net_arch = list(cri_net_arch)
 
-        if activation == 'relu':
-            activation = nnx.relu
-        elif activation == 'tanh':
-            activation = nnx.tanh
-        else:
-            raise ValueError("'activation' must be 'relu' or 'tanh'")
+        activation = self.activation_from_name(activation)
 
         act_net_arch = [in_features] + act_net_arch + [out_features]
 
@@ -85,6 +80,24 @@ class ActorCritic(nnx.Module):
             critic = layer(critic)
 
         return pi, jnp.squeeze(critic, axis=-1)
+
+    @classmethod
+    def activation_from_name(cls, name: str):
+        name = name.lower()
+        if name == 'relu':
+            return nnx.relu
+        elif name == 'tanh':
+            return nnx.tanh
+        elif name == 'sigmoid':
+            return nnx.sigmoid
+        elif name == 'leaky_relu':
+            return nnx.leaky_relu
+        elif name == 'swish':
+            return nnx.swish
+        elif name == 'elu':
+            return nnx.elu
+        else:
+            raise ValueError("'activation' must be 'relu' or 'tanh'")
 
 
 class Transition(NamedTuple):
@@ -207,12 +220,16 @@ def train(env, env_params, config, train_state, rng):
             transition = Transition(
                 done, action, value, reward, log_prob, last_obs, info
             )
+
+            # jax.debug.print('{t}', t=transition, ordered=True)
             runner_state = (train_state, env_state, obsv, rng)
             return runner_state, transition
 
         runner_state, traj_batch = jax.lax.scan(
             _env_step, runner_state, None, config["NUM_STEPS"]
         )
+
+        # jax.debug.print('{t}', t=jax.tree.map(lambda val: val.shape, traj_batch), ordered=True)
 
         # CALCULATE ADVANTAGE
         train_state, env_state, last_obs, rng = runner_state
@@ -310,18 +327,24 @@ def train(env, env_params, config, train_state, rng):
             ), "batch size must be equal to number of steps * number of envs"
             permutation = jax.random.permutation(_rng, batch_size)
             batch = (traj_batch, advantages, targets)
+
+            # jax.debug.print('bef {z}', z=jax.tree.map(lambda l: l.shape, traj_batch), ordered=True)
+
             batch = jax.tree_util.tree_map(
                 lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
             )
+            # jax.debug.print('aft {z}', z=jax.tree.map(lambda l: l.shape, batch[0]), ordered=True)
             shuffled_batch = jax.tree_util.tree_map(
                 lambda x: jnp.take(x, permutation, axis=0), batch
             )
+            # jax.debug.print('aft2 {z}', z=jax.tree.map(lambda l: l.shape, shuffled_batch[0]), ordered=True)
             minibatches = jax.tree_util.tree_map(
                 lambda x: jnp.reshape(
                     x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:])
                 ),
                 shuffled_batch,
             )
+            # jax.debug.print('aft3 {z}', z=jax.tree.map(lambda l: l.shape, minibatches[0]), ordered=True)
             train_state, total_loss = jax.lax.scan(
                 _update_minbatch, train_state, minibatches
             )
@@ -364,5 +387,569 @@ def train(env, env_params, config, train_state, rng):
     runner_state, metric = jax.lax.scan(
         _update_step, runner_state, jnp.arange(config["NUM_UPDATES"])
     )
+
+    return {"runner_state": runner_state, "metrics": metric}
+
+
+
+
+@partial(jax.jit, static_argnums=(0, 2), donate_argnums=(3,))
+def train_for(env, env_params, config, train_state, rng):
+    # INIT NETWORK
+    rng, _rng = jax.random.split(rng)
+
+    # INIT ENV
+    rng, _rng = jax.random.split(rng)
+    reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
+
+
+
+    #BUILD TRAJECTORY SHAPE
+    obsv, env_state = env.reset(reset_rng, env_params)
+
+    network, optimizer = nnx.merge(train_state.graph_def, train_state.state)
+
+    rng, _rng = jax.random.split(rng)
+    pi, value = network(obsv)
+
+    action = pi.sample(seed=_rng)
+    log_prob = pi.log_prob(action)
+
+    obsv, env_state, reward, done, info = env.step(
+        reset_rng, env_state, action, env_params
+    )
+
+    info['action'] = action
+
+    transition_lalala = Transition(done, action, value, reward, log_prob, obsv, info)
+
+    # transition_shape_and_dtype = jax.tree.map(lambda leaf: (leaf.shape, leaf.dtype), transition_lalala)
+    # # transition_dtype = jax.tree.map(lambda leaf: leaf.dtype, transition_lalala)
+    #
+    # jax.debug.print('{a}', a=tuple(transition_shape_and_dtype), ordered=True)
+    # jax.debug.print('{a}', a=transition_dtype, ordered=True)
+    ###############################################
+
+    obsv, env_state = env.reset(reset_rng, env_params)
+
+    # TRAIN LOOP
+    @loop_tqdm(config["NUM_UPDATES"], print_rate=5)
+    def _update_step(i, val):
+
+        runner_state, metric = val
+
+        # COLLECT TRAJECTORIES
+        def _env_step(j, val):
+            runner_state, traj_batch = val
+            train_state, env_state, last_obs, rng = runner_state
+
+            network, optimizer = nnx.merge(train_state.graph_def, train_state.state)
+
+            # SELECT ACTION
+            rng, _rng = jax.random.split(rng)
+            pi, value = network(last_obs)
+
+            action = pi.sample(seed=_rng)
+            log_prob = pi.log_prob(action)
+
+            # STEP ENV
+            rng, _rng = jax.random.split(rng)
+            rng_step = jax.random.split(_rng, config["NUM_ENVS"])
+            obsv, env_state, reward, done, info = env.step(
+                rng_step, env_state, action, env_params
+            )
+
+            # jax.debug.print('obs: {o}', o=obsv, ordered=True)
+
+            # obsv = obsv / jnp.array([100., 1., 100., 100., 0.0001, 0.0001, 1., 1., 1., 1.])
+
+            # jax.debug.print('obs_norm: {o}', o=obsv, ordered=True)
+
+            info['action'] = action
+
+            transition = Transition(
+                done, action, value, reward, log_prob, last_obs, info
+            )
+
+            traj_batch = jax.tree.map(lambda batch, tr: batch.at[j].set(tr), traj_batch, transition)
+
+            runner_state = (train_state, env_state, obsv, rng)
+            return runner_state, traj_batch
+
+        n_steps = config["NUM_STEPS"]
+        # jax.debug.print('{t}', t=n_steps, ordered=True)
+
+        # traj_batch = jax.tree.map(lambda shape, dtype: jnp.empty(shape=(n_steps,)+shape, dtype=dtype), transition_shape, transition_dtype)
+        traj_batch = jax.tree.map(lambda l: jnp.empty(shape=(n_steps,) + l.shape, dtype=l.dtype), transition_lalala)
+        # traj_batch = jax.tree.map(lambda val: jnp.empty(shape=(n_steps,) + val[0], dtype=val[1]), transition_shape_and_dtype)
+
+        runner_state, traj_batch = jax.lax.fori_loop(0, n_steps, _env_step, (runner_state, traj_batch))
+
+        # jax.debug.print('{t}', t=jax.tree.map(lambda val: val.shape, traj_batch), ordered=True)
+
+        # runner_state, traj_batch = jax.lax.scan(
+        #     _env_step, runner_state, None, config["NUM_STEPS"]
+        # )
+
+        # CALCULATE ADVANTAGE
+        train_state, env_state, last_obs, rng = runner_state
+        network, optimizer = nnx.merge(train_state.graph_def, train_state.state)
+        _, last_val = network(last_obs)
+
+        def _calculate_gae(traj_batch, last_val):
+            def _get_advantages(gae_and_next_value, transition):
+                gae, next_value = gae_and_next_value
+                done, value, reward = (
+                    transition.done,
+                    transition.value,
+                    transition.reward,
+                )
+                delta = reward + config["GAMMA"] * next_value * (1 - done) - value
+                gae = (
+                    delta
+                    + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
+                )
+                return (gae, value), gae
+
+            _, advantages = jax.lax.scan(
+                _get_advantages,
+                (jnp.zeros_like(last_val), last_val),
+                traj_batch,
+                reverse=True,
+                unroll=16,
+            )
+
+            return advantages, advantages + traj_batch.value
+
+        advantages, targets = _calculate_gae(traj_batch, last_val)
+
+        # UPDATE NETWORK
+        def _update_epoch(j, val):
+
+            update_state, loss_info = val
+
+            def _update_minbatch(k, val):
+                train_state, total_loss_batch, minibatches = val
+                batch_info = jax.tree.map(lambda leaf: leaf[k], minibatches)
+
+                traj_batch, advantages, targets = batch_info
+
+                def _loss_fn(network, traj_batch, gae, targets):
+                    # RERUN NETWORK
+                    pi, value = network(traj_batch.obs)
+                    log_prob = pi.log_prob(traj_batch.action)
+
+                    # CALCULATE VALUE LOSS
+                    value_pred_clipped = traj_batch.value + (
+                        value - traj_batch.value
+                    ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
+                    value_losses = jnp.square(value - targets)
+                    value_losses_clipped = jnp.square(value_pred_clipped - targets)
+                    value_loss = (
+                        0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
+                    )
+
+                    # CALCULATE ACTOR LOSS
+                    ratio = jnp.exp(log_prob - traj_batch.log_prob)
+                    gae = jax.lax.cond(config["NORMALIZE_ADVANTAGES"],
+                                       lambda : (gae - gae.mean()) / (gae.std() + 1e-8),
+                                       lambda : gae)
+                    loss_actor1 = ratio * gae
+                    loss_actor2 = (
+                        jnp.clip(
+                            ratio,
+                            1.0 - config["CLIP_EPS"],
+                            1.0 + config["CLIP_EPS"],
+                        )
+                        * gae
+                    )
+                    loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
+                    loss_actor = loss_actor.mean()
+                    entropy = pi.entropy().mean()
+
+                    total_loss = (
+                        loss_actor
+                        + config["VF_COEF"] * value_loss
+                        - config["ENT_COEF"] * entropy
+                    )
+                    return total_loss, (value_loss, loss_actor, entropy)
+
+                network, optimizer = nnx.merge(train_state.graph_def, train_state.state)
+
+                grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
+                total_loss, grads = grad_fn(
+                    network, traj_batch, advantages, targets
+                )
+
+                optimizer.update(grads)
+                train_state = train_state.replace(state=nnx.state((network, optimizer)))
+
+                total_loss_batch = jax.tree.map(lambda batch, loss: batch.at[k].set(loss), total_loss_batch, total_loss)
+
+                return train_state, total_loss_batch, minibatches
+
+            train_state, traj_batch, advantages, targets, rng = update_state
+            rng, _rng = jax.random.split(rng)
+            batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
+            assert (
+                batch_size == config["NUM_STEPS"] * config["NUM_ENVS"]
+            ), "batch size must be equal to number of steps * number of envs"
+            permutation = jax.random.permutation(_rng, batch_size)
+            batch = (traj_batch, advantages, targets)
+            batch = jax.tree_util.tree_map(
+                lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
+            )
+            shuffled_batch = jax.tree_util.tree_map(
+                lambda x: jnp.take(x, permutation, axis=0), batch
+            )
+            minibatches = jax.tree_util.tree_map(
+                lambda x: jnp.reshape(
+                    x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:])
+                ),
+                shuffled_batch,
+            )
+
+            # jax.debug.print('minibatches: {m}', m=jax.tree.map(lambda val: tuple(val.shape), minibatches))
+
+            n_minibatch = config["NUM_MINIBATCHES"]
+
+            total_loss_batch = (jnp.empty((n_minibatch,)), (jnp.empty((n_minibatch,)), jnp.empty((n_minibatch,)), jnp.empty((n_minibatch,))))
+
+            train_state, total_loss, minibatches = jax.lax.fori_loop(0, n_minibatch, _update_minbatch, (train_state, total_loss_batch, minibatches))
+
+            # train_state, total_loss = jax.lax.scan(
+            #     _update_minbatch, train_state, minibatches
+            # )
+
+            # jax.debug.print('total_loss: {m}', m=jax.tree.map(lambda val: tuple(val.shape), total_loss))
+            # jax.debug.print('total_loss: {m}', m=type(total_loss))
+            update_state = (train_state, traj_batch, advantages, targets, rng)
+
+            loss_info = jax.tree.map(lambda batch, loss: batch.at[j].set(loss), loss_info, total_loss)
+
+            return update_state, loss_info
+
+        n_minibatch = config["NUM_MINIBATCHES"]
+        n_epochs = config["UPDATE_EPOCHS"]
+
+        loss_info = (jnp.empty((n_epochs, n_minibatch)), (jnp.empty((n_epochs, n_minibatch)), jnp.empty((n_epochs, n_minibatch)), jnp.empty((n_epochs, n_minibatch))))
+
+        update_state = (train_state, traj_batch, advantages, targets, rng)
+
+        update_state, loss_info = jax.lax.fori_loop(0, n_epochs, _update_epoch, (update_state, loss_info))
+
+        # update_state, loss_info = jax.lax.scan(
+        #     _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
+        # )
+
+        train_state = update_state[0]
+        # metric = traj_batch.info
+        rng = update_state[-1]
+
+        if config.get("DEBUG"):
+
+            def callback(info):
+                return_values = info["returned_episode_returns"][
+                    info["returned_episode"]
+                ]
+                timesteps = (
+                    info["timestep"][info["returned_episode"]] * config["NUM_ENVS"]
+                )
+                for t in range(len(timesteps)):
+                    print(
+                        f"global step={timesteps[t]}, episodic return={return_values[t]}"
+                    )
+
+            jax.debug.callback(callback, metric)
+
+        runner_state = (train_state, env_state, last_obs, rng)
+
+        metric = jax.tree.map(lambda batch, loss: batch.at[i].set(loss), metric, traj_batch.info)
+
+        return runner_state, metric
+
+    rng, _rng = jax.random.split(rng)
+    runner_state = (train_state, env_state, obsv, _rng)
+
+    n_steps = config["NUM_STEPS"]
+    n_updates = config["NUM_UPDATES"]
+
+    metric = jax.tree.map(lambda l: jnp.empty(shape=(n_updates, n_steps) + l.shape, dtype=l.dtype), transition_lalala.info)
+
+    runner_state, metric = jax.lax.fori_loop(0, n_updates, _update_step, (runner_state, metric))
+    # runner_state, metric = jax.lax.scan(
+    #     _update_step, runner_state, jnp.arange(config["NUM_UPDATES"])
+    # )
+
+    return {"runner_state": runner_state, "metrics": metric}
+
+
+
+@partial(nnx.jit, static_argnums=(0, 2), donate_argnums=(3,))
+def train_for_flax(env, env_params, config, network, optimizer, rng):
+    # INIT NETWORK
+    rng, _rng = jax.random.split(rng)
+
+    # INIT ENV
+    rng, _rng = jax.random.split(rng)
+    reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
+
+
+    #BUILD TRAJECTORY SHAPE
+    obsv, env_state = env.reset(reset_rng, env_params)
+
+    rng, _rng = jax.random.split(rng)
+    pi, value = network(obsv)
+
+    action = pi.sample(seed=_rng)
+    log_prob = pi.log_prob(action)
+
+    obsv, env_state, reward, done, info = env.step(
+        reset_rng, env_state, action, env_params
+    )
+
+    info['action'] = action
+
+    transition_lalala = Transition(done, action, value, reward, log_prob, obsv, info)
+
+    # transition_shape_and_dtype = jax.tree.map(lambda leaf: (leaf.shape, leaf.dtype), transition_lalala)
+    # # transition_dtype = jax.tree.map(lambda leaf: leaf.dtype, transition_lalala)
+    #
+    # jax.debug.print('{a}', a=tuple(transition_shape_and_dtype), ordered=True)
+    # jax.debug.print('{a}', a=transition_dtype, ordered=True)
+    ###############################################
+
+    obsv, env_state = env.reset(reset_rng, env_params)
+
+    # TRAIN LOOP
+    # @loop_tqdm(config["NUM_UPDATES"], print_rate=5)
+    def _update_step(i, val):
+
+        runner_state, metric = val
+
+        # COLLECT TRAJECTORIES
+        def _env_step(j, val):
+            runner_state, traj_batch = val
+            network, env_state, last_obs, rng = runner_state
+
+            # SELECT ACTION
+            rng, _rng = jax.random.split(rng)
+            pi, value = network(last_obs)
+
+            action = pi.sample(seed=_rng)
+            log_prob = pi.log_prob(action)
+
+            # STEP ENV
+            rng, _rng = jax.random.split(rng)
+            rng_step = jax.random.split(_rng, config["NUM_ENVS"])
+            obsv, env_state, reward, done, info = env.step(
+                rng_step, env_state, action, env_params
+            )
+
+            # jax.debug.print('obs: {o}', o=obsv, ordered=True)
+
+            # obsv = obsv / jnp.array([100., 1., 100., 100., 0.0001, 0.0001, 1., 1., 1., 1.])
+
+            # jax.debug.print('obs_norm: {o}', o=obsv, ordered=True)
+
+            info['action'] = action
+
+            transition = Transition(
+                done, action, value, reward, log_prob, last_obs, info
+            )
+
+            traj_batch = jax.tree.map(lambda batch, tr: batch.at[j].set(tr), traj_batch, transition)
+
+            runner_state = (network, env_state, obsv, rng)
+            return runner_state, traj_batch
+
+        n_steps = config["NUM_STEPS"]
+        # jax.debug.print('{t}', t=n_steps, ordered=True)
+
+        # traj_batch = jax.tree.map(lambda shape, dtype: jnp.empty(shape=(n_steps,)+shape, dtype=dtype), transition_shape, transition_dtype)
+        traj_batch = jax.tree.map(lambda l: jnp.empty(shape=(n_steps,) + l.shape, dtype=l.dtype), transition_lalala)
+        # traj_batch = jax.tree.map(lambda val: jnp.empty(shape=(n_steps,) + val[0], dtype=val[1]), transition_shape_and_dtype)
+
+        runner_state, traj_batch = nnx.fori_loop(0, n_steps, _env_step, (runner_state, traj_batch))
+
+        # jax.debug.print('{t}', t=jax.tree.map(lambda val: val.shape, traj_batch), ordered=True)
+
+        # runner_state, traj_batch = jax.lax.scan(
+        #     _env_step, runner_state, None, config["NUM_STEPS"]
+        # )
+
+        # CALCULATE ADVANTAGE
+        network, env_state, last_obs, rng = runner_state
+        _, last_val = network(last_obs)
+
+        def _calculate_gae(traj_batch, last_val):
+            def _get_advantages(gae_and_next_value, transition):
+                gae, next_value = gae_and_next_value
+                done, value, reward = (
+                    transition.done,
+                    transition.value,
+                    transition.reward,
+                )
+                delta = reward + config["GAMMA"] * next_value * (1 - done) - value
+                gae = (
+                    delta
+                    + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
+                )
+                return (gae, value), gae
+
+            _, advantages = jax.lax.scan(
+                _get_advantages,
+                (jnp.zeros_like(last_val), last_val),
+                traj_batch,
+                reverse=True,
+                unroll=16,
+            )
+
+            return advantages, advantages + traj_batch.value
+
+        advantages, targets = _calculate_gae(traj_batch, last_val)
+
+        # UPDATE NETWORK
+        def _update_epoch(j, val):
+
+            update_state, loss_info = val
+
+            def _update_minbatch(k, val):
+                network, total_loss_batch, minibatches = val
+                batch_info = jax.tree.map(lambda leaf: leaf[k], minibatches)
+
+                traj_batch, advantages, targets = batch_info
+
+                def _loss_fn(network, traj_batch, gae, targets):
+                    # RERUN NETWORK
+                    pi, value = network(traj_batch.obs)
+                    log_prob = pi.log_prob(traj_batch.action)
+
+                    # CALCULATE VALUE LOSS
+                    value_pred_clipped = traj_batch.value + (
+                        value - traj_batch.value
+                    ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
+                    value_losses = jnp.square(value - targets)
+                    value_losses_clipped = jnp.square(value_pred_clipped - targets)
+                    value_loss = (
+                        0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
+                    )
+
+                    # CALCULATE ACTOR LOSS
+                    ratio = jnp.exp(log_prob - traj_batch.log_prob)
+                    gae = jax.lax.cond(config["NORMALIZE_ADVANTAGES"],
+                                       lambda : (gae - gae.mean()) / (gae.std() + 1e-8),
+                                       lambda : gae)
+                    loss_actor1 = ratio * gae
+                    loss_actor2 = (
+                        jnp.clip(
+                            ratio,
+                            1.0 - config["CLIP_EPS"],
+                            1.0 + config["CLIP_EPS"],
+                        )
+                        * gae
+                    )
+                    loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
+                    loss_actor = loss_actor.mean()
+                    entropy = pi.entropy().mean()
+
+                    total_loss = (
+                        loss_actor
+                        + config["VF_COEF"] * value_loss
+                        - config["ENT_COEF"] * entropy
+                    )
+                    return total_loss, (value_loss, loss_actor, entropy)
+
+                grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
+                total_loss, grads = grad_fn(
+                    network, traj_batch, advantages, targets
+                )
+
+                optimizer.update(grads)
+                total_loss_batch = jax.tree.map(lambda batch, loss: batch.at[k].set(loss), total_loss_batch, total_loss)
+
+                return network, total_loss_batch, minibatches
+
+            network, traj_batch, advantages, targets, rng = update_state
+            rng, _rng = jax.random.split(rng)
+            batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
+            assert (
+                batch_size == config["NUM_STEPS"] * config["NUM_ENVS"]
+            ), "batch size must be equal to number of steps * number of envs"
+            permutation = jax.random.permutation(_rng, batch_size)
+            batch = (traj_batch, advantages, targets)
+            batch = jax.tree_util.tree_map(
+                lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
+            )
+            shuffled_batch = jax.tree_util.tree_map(
+                lambda x: jnp.take(x, permutation, axis=0), batch
+            )
+            minibatches = jax.tree_util.tree_map(
+                lambda x: jnp.reshape(
+                    x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:])
+                ),
+                shuffled_batch,
+            )
+
+            # jax.debug.print('minibatches: {m}', m=jax.tree.map(lambda val: tuple(val.shape), minibatches))
+
+            n_minibatch = config["NUM_MINIBATCHES"]
+
+            total_loss_batch = (jnp.empty((n_minibatch,)), (jnp.empty((n_minibatch,)), jnp.empty((n_minibatch,)), jnp.empty((n_minibatch,))))
+
+            network, total_loss, minibatches = nnx.fori_loop(0, n_minibatch, _update_minbatch, (network, total_loss_batch, minibatches))
+
+            # jax.debug.print('total_loss: {m}', m=jax.tree.map(lambda val: tuple(val.shape), total_loss))
+            # jax.debug.print('total_loss: {m}', m=type(total_loss))
+            update_state = (network, traj_batch, advantages, targets, rng)
+
+            loss_info = jax.tree.map(lambda batch, loss: batch.at[j].set(loss), loss_info, total_loss)
+
+            return update_state, loss_info
+
+        n_minibatch = config["NUM_MINIBATCHES"]
+        n_epochs = config["UPDATE_EPOCHS"]
+
+        loss_info = (jnp.empty((n_epochs, n_minibatch)), (jnp.empty((n_epochs, n_minibatch)), jnp.empty((n_epochs, n_minibatch)), jnp.empty((n_epochs, n_minibatch))))
+
+        update_state = (network, traj_batch, advantages, targets, rng)
+
+        update_state, loss_info = nnx.fori_loop(0, n_epochs, _update_epoch, (update_state, loss_info))
+
+        # metric = traj_batch.info
+        network = update_state[0]
+        rng = update_state[-1]
+
+        if config.get("DEBUG"):
+
+            def callback(info):
+                return_values = info["returned_episode_returns"][
+                    info["returned_episode"]
+                ]
+                timesteps = (
+                    info["timestep"][info["returned_episode"]] * config["NUM_ENVS"]
+                )
+                for t in range(len(timesteps)):
+                    print(
+                        f"global step={timesteps[t]}, episodic return={return_values[t]}"
+                    )
+
+            jax.debug.callback(callback, metric)
+
+        runner_state = (network, env_state, last_obs, rng)
+
+        metric = jax.tree.map(lambda batch, loss: batch.at[i].set(loss), metric, traj_batch.info)
+
+        return runner_state, metric
+
+    rng, _rng = jax.random.split(rng)
+    runner_state = (network, env_state, obsv, _rng)
+
+    n_steps = config["NUM_STEPS"]
+    n_updates = config["NUM_UPDATES"]
+
+    metric = jax.tree.map(lambda l: jnp.empty(shape=(n_updates, n_steps) + l.shape, dtype=l.dtype), transition_lalala.info)
+
+    runner_state, metric = nnx.fori_loop(0, n_updates, _update_step, (runner_state, metric))
 
     return {"runner_state": runner_state, "metrics": metric}
