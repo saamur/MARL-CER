@@ -12,6 +12,10 @@ import numpy as np
 import optax
 from typing import Sequence, NamedTuple, Any
 import distrax
+
+import algorithms.utils as utils
+from ernestogym.envs_jax.single_agent.env import MicroGridEnv
+
 from .wrappers import (
     LogWrapper,
     VecEnv,
@@ -114,17 +118,17 @@ class TrainState:
     graph_def: GraphDef
     state: GraphState
 
-def construct_net_from_config(config, rng):
-    return ActorCritic(
-    config["OBSERVATION_SPACE_SIZE"],
-    config["ACTION_SPACE_SIZE"],
-    activation=config["ACTIVATION"],
-    net_arch=config.get("NET_ARCH"),
-    act_net_arch=config.get("ACT_NET_ARCH"),
-    cri_net_arch=config.get("CRI_NET_ARCH"),
-    add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
-    rngs=rng
-)
+# def construct_net_from_config(config, rng):
+#     return ActorCritic(
+#     config["OBSERVATION_SPACE_SIZE"],
+#     config["ACTION_SPACE_SIZE"],
+#     activation=config["ACTIVATION"],
+#     net_arch=config.get("NET_ARCH"),
+#     act_net_arch=config.get("ACT_NET_ARCH"),
+#     cri_net_arch=config.get("CRI_NET_ARCH"),
+#     add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
+#     rngs=rng
+# )
 
 def make_train(config, env, env_params):
     config["NUM_UPDATES"] = (
@@ -155,7 +159,7 @@ def make_train(config, env, env_params):
 
 
     _rng = nnx.Rngs(123)
-    network = construct_net_from_config(config, _rng)
+    network = utils.construct_net_from_config(config, _rng)
 
     if config["ANNEAL_LR"]:
         tx = optax.chain(
@@ -176,9 +180,50 @@ def make_train(config, env, env_params):
 
     return env, env_params, train_state
 
-@partial(jax.jit, static_argnums=(0, 2), donate_argnums=(3,))
-def train(env, env_params, config, train_state, rng):
-    # INIT NETWORK
+@partial(jax.jit, static_argnums=(0, 4, 6))
+def test_network(env: MicroGridEnv, env_params, train_state, rng, num_iter, curr_iter=0, print_data=False):
+
+    network, _ = nnx.merge(train_state.graph_def, train_state.state)
+
+    rng, _rng = jax.random.split(rng)
+
+    obsv, env_state = env.reset(_rng, env_params)
+
+    # @scan_tqdm(num_iter, print_rate=num_iter // 100)
+    def _env_step(runner_state, unused):
+        obsv, env_state, rng = runner_state
+
+        pi, _ = network(obsv)
+
+        #deterministic action
+        action = pi.mode()
+
+        rng, _rng = jax.random.split(rng)
+        obsv, env_state, reward, done, info = env.step(_rng, env_state, action, env_params)
+
+        runner_state = (obsv, env_state, rng)
+        info['action'] = action
+        return runner_state, info
+
+    runner_state = (obsv, env_state, rng)
+
+    runner_state, info = jax.lax.scan(_env_step, runner_state, jnp.arange(num_iter))
+
+    reward_type = 'weig_reward'
+
+    if print_data:
+        jax.debug.print('curr_iter: {i}\n\tr_tot: {r_tot}\n\tr_trad: {r_trad}\n\tr_deg: {r_deg}\n\tr_clip: {r_clip}',
+                        i=curr_iter, r_tot=jnp.sum(info['r_tot']), r_trad=jnp.sum(info[reward_type]['r_trad']), r_deg=jnp.sum(info[reward_type]['r_deg']), r_clip=jnp.sum(info[reward_type]['r_clipping']))
+
+    return info
+
+@partial(jax.jit, static_argnums=(0, 2, 5, 6, 7, 10), donate_argnums=(3,))
+def train(env, env_params, config, train_state, rng, validate=True, freq_val=None, val_env=None, val_params=None, val_rng=None, val_num_iters=None):
+
+    if validate:
+        if freq_val is None or val_env is None or val_params is None or val_rng is None or val_num_iters is None:
+            raise ValueError("'freq_val', 'val_env', 'val_params', 'val_rng' and 'val_num_iters' must be defined when 'validate' is True")
+
     rng, _rng = jax.random.split(rng)
 
     # INIT ENV
@@ -186,10 +231,19 @@ def train(env, env_params, config, train_state, rng):
     reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
     obsv, env_state = env.reset(reset_rng, env_params)
 
+    if validate:
+        info = test_network(val_env, val_params, train_state, val_rng, val_num_iters, print_data=False)
+        val_info = jax.tree.map(lambda x: jnp.empty_like(x, shape=((config['NUM_UPDATES']-1)//freq_val+1,)+x.shape), info)
+    else:
+        val_info = 0
+
     # TRAIN LOOP
     @scan_tqdm(config["NUM_UPDATES"], print_rate=5)
-    def _update_step(runner_state, unused):
+    def _update_step(runner_state_plus, curr_iter):
         # COLLECT TRAJECTORIES
+
+        runner_state, val_info = runner_state_plus
+
         def _env_step(runner_state, unused):
             train_state, env_state, last_obs, rng = runner_state
 
@@ -377,18 +431,34 @@ def train(env, env_params, config, train_state, rng):
 
             jax.debug.callback(callback, metric)
 
+        if validate:
+            val_info = jax.lax.cond(curr_iter % freq_val == 0,
+                                    lambda: jax.tree.map(lambda all, new: all.at[curr_iter // freq_val].set(new),
+                                                         val_info,
+                                                         test_network(val_env, val_params, train_state, val_rng, val_num_iters, curr_iter=curr_iter, print_data=True)),
+                                    lambda: val_info)
+
         runner_state = (train_state, env_state, last_obs, rng)
 
-        return runner_state, metric
+        runner_state_plus = (runner_state, val_info)
+
+        return runner_state_plus, metric
 
     rng, _rng = jax.random.split(rng)
     runner_state = (train_state, env_state, obsv, _rng)
 
-    runner_state, metric = jax.lax.scan(
-        _update_step, runner_state, jnp.arange(config["NUM_UPDATES"])
+    runner_state_plus = (runner_state, val_info)
+
+    runner_state_plus, metric = jax.lax.scan(
+        _update_step, runner_state_plus, jnp.arange(config["NUM_UPDATES"])
     )
 
-    return {"runner_state": runner_state, "metrics": metric}
+    runner_state, val_info = runner_state_plus
+
+    if validate:
+        return {'runner_state': runner_state, 'metrics': metric, 'val_info': val_info}
+    else:
+        return {'runner_state': runner_state, 'metrics': metric}
 
 
 

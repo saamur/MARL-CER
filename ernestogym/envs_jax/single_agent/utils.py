@@ -58,7 +58,8 @@ def parameter_generator(battery_options: str = BATTERY_OPTIONS,
               'demand': {'data': read_csv(world_settings['demand']['path']),
                          'timestep': world_settings['demand']['timestep'],
                          'test_profiles': world_settings['demand']['test_profiles'],
-                         'data_usage': world_settings['demand']['data_usage']}}
+                         'data_usage': world_settings['demand']['data_usage'],
+                         'path': world_settings['demand']['path']}}
     
     if replacement_cost is not None:
         params['battery']['params']['nominal_cost'] = replacement_cost
@@ -69,18 +70,21 @@ def parameter_generator(battery_options: str = BATTERY_OPTIONS,
     if 'generation' in world_settings['observations']:
         params['generation'] = {'data': read_csv(world_settings['generation']['path']),
                                 'timestep': world_settings['generation']['timestep'],
-                                'data_usage': world_settings['generation']['data_usage']}
+                                'data_usage': world_settings['generation']['data_usage'],
+                                'path': world_settings['generation']['path']}
 
     if 'market' in world_settings:
         params['market'] = {'data': read_csv(world_settings['market']['path']),
                             'timestep': world_settings['market']['timestep'],
                             'data_usage': world_settings['market']['data_usage'],
-                            'spread_factor': spread_factor}
+                            'spread_factor': spread_factor,
+                            'path': world_settings['market']['path']}
     
     if 'temp_amb' in world_settings:
         params['temp_amb'] = {'data': read_csv(world_settings['temp_amb']['path']),
-                            'timestep': world_settings['temp_amb']['timestep'],
-                            'data_usage': world_settings['temp_amb']['data_usage']}
+                              'timestep': world_settings['temp_amb']['timestep'],
+                              'data_usage': world_settings['temp_amb']['data_usage'],
+                              'path': world_settings['temp_amb']['path']}
 
     # Dummy information about world behavior
     params['dummy'] = world_settings['dummy']

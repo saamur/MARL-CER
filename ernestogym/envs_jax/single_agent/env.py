@@ -45,6 +45,7 @@ class EnvParams(environment.EnvParams):
     i_max_action: float = 1
     env_step: int = 60
     is_training: bool = True
+    test_profile: int = -1
 
 
 class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
@@ -277,11 +278,11 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
     def reset_env(self, key: chex.PRNGKey, params: EnvParams):
         state = self.initial_state
-        # demand = jax.lax.cond(params.is_training,
-        #                       lambda: Demand.build_demand_data(jax.random.choice(key, self.dem_matrix), timestep=params.env_step),
-        #                       lambda: Demand.build_demand_data(jax.random.choice(key, self.test_dem_matrix), timestep=params.env_step))
+        demand = jax.lax.cond(params.is_training,
+                              lambda: Demand.build_demand_data(jax.random.choice(key, self.dem_matrix), timestep=params.env_step),
+                              lambda: Demand.build_demand_data(self.dem_matrix[params.test_profile%self.dem_matrix.shape[0]], timestep=params.env_step))
 
-        demand = Demand.build_demand_data(jax.random.choice(key, self.dem_matrix), timestep=params.env_step)
+        # demand = Demand.build_demand_data(jax.random.choice(key, self.dem_matrix), timestep=params.env_step)
         state = state.replace(demand_data=demand)
         obs = self.get_obs(state, params)
         return obs, state
@@ -427,4 +428,4 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             return r_trading, r_op, r_deg, r_clipping
 
     def eval(self, params: EnvParams) -> EnvParams:
-        return params.replace(is_training=False)
+        return params.replace(is_training=False, test_profile=0)
