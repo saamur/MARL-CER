@@ -3,6 +3,8 @@ from flax import struct
 from typing import Dict, Tuple
 from collections import OrderedDict
 
+import numpy as np
+
 import jax
 import jax.numpy as jnp
 from jaxmarl.environments import State
@@ -11,9 +13,10 @@ import jaxmarl.environments.spaces  as spaces
 
 from functools import partial
 
-from ernestogym.ernesto_jax.demand import Demand
+from ernestogym.ernesto_jax.demand import Demand, DemandData
 from ernestogym.ernesto_jax.generation import Generation
 from ernestogym.ernesto_jax.market import BuyingPrice, SellingPrice
+from ernestogym.ernesto_jax.ambient_temperature import AmbientTemperature
 
 from ernestogym.ernesto_jax.energy_storage.bess import BessState
 import ernestogym.ernesto_jax.energy_storage.bess_fading as bess_fading
@@ -24,6 +27,9 @@ import ernestogym.ernesto_jax.energy_storage.bess_degrading_dropflow as bess_deg
 @struct.dataclass
 class EnvState(State):
     battery_states: BessState
+
+    demands_battery_houses: DemandData
+    demands_passive_houses: DemandData
 
     iter: int
     timeframe: int
@@ -55,18 +61,18 @@ class RECEnv(MultiAgentEnv):
         batteries = []
 
         if settings['aging_type'] == 'fading':
-            self.BESS_class = bess_fading.BatteryEnergyStorageSystem
+            self.BESS = bess_fading.BatteryEnergyStorageSystem
         elif settings['aging_type'] == 'degrading':
-            self.BESS_class = bess_degrading.BatteryEnergyStorageSystem
+            self.BESS = bess_degrading.BatteryEnergyStorageSystem
         if settings['aging_type'] == 'degrading_dropflow':
-            self.BESS_class = bess_degrading_dropflow.BatteryEnergyStorageSystem
+            self.BESS = bess_degrading_dropflow.BatteryEnergyStorageSystem
         else:
             raise ValueError(f'Unsupported battery aging: {settings['aging_type']}')
 
-        for b in settings['batteries']:
-            batteries.append(self.BESS_class.get_init_state(models_config=b['model_config'],
-                                                                 battery_options=b['battery_options'],
-                                                                 input_var=settings['input_var']))
+        for i in range(self.num_battery_agents):
+            batteries.append(self.BESS.get_init_state(models_config=settings['model_config'][i],
+                                                      battery_options=settings['batteries'][i],
+                                                      input_var=settings['input_var']))
 
 
         battery_states = jax.tree.map(lambda *vals: jnp.array(vals), *batteries)
@@ -74,59 +80,95 @@ class RECEnv(MultiAgentEnv):
 
         ########################## DEMAND, GENERATION AND PRICES ##########################
 
-        def setup_demand_generation_prices(demand_list, generation_list, selling_price_list, buying_prices_list, length):
+        def setup_demand_generation_prices(demand_list, generation_list, selling_price_list, buying_prices_list, temp_list, length):
 
             assert len(demand_list) == length
             assert len(generation_list) == length
             assert len(selling_price_list) == length
-            assert len(buying_prices_list) == length
 
-            demands_data = [d['data'] for d in demand_list]
-            demands_timestep = [d['timestep'] for d in demand_list]
-            generations_data = [g['data'] for g in generation_list]
-            generations_timestep = [g['timestep'] for g in generation_list]
-            selling_prices_data = [s['data'] for s in selling_price_list]
-            selling_prices_timestep = [s['timestep'] for s in selling_price_list]
-            buying_prices_data = [b['data'] for b in buying_prices_list]
-            buying_prices_timestep = [b['timestep'] for b in buying_prices_list]
-            buying_prices_circularity = [b['circular'] for b in buying_prices_list]
+            dem_step = demand_list[0]['timestep']
+            gen_step = generation_list[0]['timestep']
+            buy_step = buying_prices_list[0]['timestep']
+            sell_step = selling_price_list[0]['timestep']
 
-            max_length = max([len(data) * ts for data, ts in zip(demands_data + generations_data +
-                                                                 selling_prices_data + [buying_prices_data[i] for i in range(length) if not buying_prices_circularity[i]],
-                                                                 demands_timestep + generations_timestep +
-                                                                 selling_prices_timestep + [buying_prices_timestep[i] for i in range(length) if not buying_prices_circularity[i]])])
+            dem_matrices_raw = [jnp.array(dem['data'].to_numpy().T) for dem in demand_list]                 #num_battery_agents x num_profiles x length
 
-            demands = [Demand.build_demand_data(data, timestep, self.env_step, max_length) for data, timestep in zip(demands_data, demands_timestep)]
-            generations = [Generation.get_generation(data, timestep, self.env_step, max_length) for data, timestep in zip(generations_data, generations_timestep)]
-            selling_prices = [SellingPrice.build_selling_price_data(data, timestep, self.env_step, max_length) for data, timestep in zip(selling_prices_data, selling_prices_timestep)]
-            buying_prices = [BuyingPrice.build_buying_price_data(data, timestep, self.env_step, max_length, circular) for data, timestep, circular in zip(buying_prices_data, buying_prices_timestep, buying_prices_circularity)]
+            gen_d = [gen['data'].to_numpy() for gen in generation_list]                                     #num_battery_agents x length
+            buy_d = [buy['data'].to_numpy() for buy in buying_prices_list]
+            sell_d = [sell['data'].to_numpy() for sell in selling_price_list]
 
-            return (jax.tree.map(lambda *vals: jnp.array(vals), *demands),
-                    jax.tree.map(lambda *vals: jnp.array(vals), *generations),
-                    jax.tree.map(lambda *vals: jnp.array(vals), *selling_prices),
-                    jax.tree.map(lambda *vals: jnp.array(vals), *buying_prices))
+            if temp_list is not None:
+                assert len(buying_prices_list) == length
+                temp_step = temp_list[0]['timestep']
+                temp_d = [temp['data'].to_numpy() for temp in temp_list]
 
 
-        self.demands_battery_houses, self.generations_battery_houses, self.selling_prices_battery_houses, self.buying_prices_battery_houses = setup_demand_generation_prices(
-            settings['demands_battery_houses'],
-            settings['generations_battery_houses'],
-            settings['selling_prices_battery_houses'],
-            settings['buying_prices_battery_houses'],
-            self.num_battery_agents)
+            max_length = min(dem_matrices_raw[0].shape[1] * dem_step,
+                             len(gen_d[0]) * gen_step,
+                             len(buy_d[0]) * buy_step,
+                             len(sell_d[0]) * sell_step)
 
-        self.demands_passive_houses, self.generations_passive_houses, self.selling_prices_passive_houses, self.buying_prices_passive_houses = setup_demand_generation_prices(
-            settings['demands_passive_houses'],
-            settings['generations_passive_houses'],
-            settings['selling_prices_passive_houses'],
-            settings['buying_prices_passive_houses'],
-            self.num_passive_houses)
+            if temp_list is not None:
+                max_length = min (max_length, len(temp_d[0]) * temp_step)
 
+            dem_matrices = jnp.array([[Demand.build_demand_array(dem_prof, in_timestep=dem_step, out_timestep=self.env_step, max_length=max_length)
+                                       for dem_prof in matrix_agent]
+                                      for matrix_agent in dem_matrices_raw])
+
+            demands = [Demand.build_demand_data(agent_matrix[0], self.env_step) for agent_matrix in dem_matrices]
+            generations = [Generation.build_generation_data(data, in_timestep=gen_step, out_timestep=self.env_step, max_length=max_length) for data in gen_d]
+            selling_prices = [SellingPrice.build_selling_price_data(data, in_timestep=sell_step, out_timestep=self.env_step, max_length=max_length) for data in sell_d]
+            buying_prices = [BuyingPrice.build_buying_price_data(data, in_timestep=buy_step, out_timestep=self.env_step, max_length=max_length) for data in buy_d]
+
+            ret = (dem_matrices,
+                   jax.tree.map(lambda *vals: jnp.array(vals), *demands),
+                   jax.tree.map(lambda *vals: jnp.array(vals), *generations),
+                   jax.tree.map(lambda *vals: jnp.array(vals), *selling_prices),
+                   jax.tree.map(lambda *vals: jnp.array(vals), *buying_prices))
+
+            if temp_list is not None:
+                temperatures = [AmbientTemperature.build_generation_data(data, in_timestep=temp_step, out_timestep=self.env_step, max_length=max_length) for data in temp_d]
+                ret += (jax.tree.map(lambda *vals: jnp.array(vals), *temperatures),)
+
+            return ret
+
+
+        (self.dem_matrices_battery_houses,
+         demands_battery_houses,
+         self.generations_battery_houses,
+         self.selling_prices_battery_houses,
+         self.buying_prices_battery_houses,
+         self.temp_ambient) = setup_demand_generation_prices(settings['demands_battery_houses'],
+                                                             settings['generations_battery_houses'],
+                                                             settings['selling_prices_battery_houses'],
+                                                             settings['buying_prices_battery_houses'],
+                                                             settings['temperatures_battery_houses'],
+                                                             self.num_battery_agents)
+
+        if self.num_passive_houses > 0:
+            (self.dem_matrices_passive_houses,
+             demands_passive_houses,
+             self.generations_passive_houses,
+             self.selling_prices_passive_houses,
+             self.buying_prices_passive_houses) = setup_demand_generation_prices(settings['demands_passive_houses'],
+                                                                                 settings['generations_passive_houses'],
+                                                                                 settings['selling_prices_passive_houses'],
+                                                                                 settings['buying_prices_passive_houses'],
+                                                                                 None,
+                                                                                 self.num_passive_houses)
+        else:
+            demands_passive_houses = 0
+
+        self.market = BuyingPrice.build_buying_price_data(jnp.array(settings['market']['data'].to_numpy()), settings['market']['timestep'], self.env_step, settings['market']['timestep'] * len(settings['market']['data']), False)
+
+        self.valorization_incentive_coeff = settings['valorization_incentive_coeff']
+        self.incentivizing_tariff_coeff = settings['incentivizing_tariff_coeff']
+        self.incentivizing_tariff_max_variable = settings['incentivizing_tariff_max_variable']
+        self.incentivizing_tariff_baseline_variable = settings['incentivizing_tariff_baseline_variable']
 
         self._termination = settings['termination']
-
-        assert self._termination['max_iterations'] is not None
-
-        max_iterations = self._termination['max_iterations']
+        if self._termination['max_iterations'] is None:
+            self._termination['max_iterations'] = jnp.inf
 
         self.trading_coeff = settings['reward']['trading_coeff'] if 'trading_coeff' in settings['reward'] else 0
         self.op_cost_coeff = settings['reward']['operational_cost_coeff'] if 'operational_cost_coeff' in settings['reward'] else 0
@@ -134,110 +176,129 @@ class RECEnv(MultiAgentEnv):
         self.clip_action_coeff = settings['reward']['clip_action_coeff'] if 'clip_action_coeff' in settings['reward'] else 0
         self.use_reward_normalization = settings['use_reward_normalization']
 
-        self.trad_norm_term = max(self.generation_data.max * self.selling_price_data.max,
-                                   self.demand_data.max * self.buying_price_data.max)
-
-
         ########################## OBSERVATION SPACES ##########################
 
-        self.observation_spaces = OrderedDict([(a, OrderedDict()) for a in self.agents])
+        # self.observation_spaces = OrderedDict([(a, OrderedDict()) for a in self.agents])
+        self.battery_obs_space = OrderedDict()
 
         self._obs_battery_agents_keys = ['temperature', 'soc', 'demand', 'generation', 'buying_price', 'selling_price']
 
-        for a in self.battery_agents:
-            self.observation_spaces[a]['temperature'] = spaces.Box(low=250., high=400., shape=(1,))
-            self.observation_spaces[a]['soc'] = spaces.Box(low=0., high=1., shape=(1,))
-            self.observation_spaces[a]['demand'] = spaces.Box(low=0., high=1., shape=(1,))
-            self.observation_spaces[a]['generation'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
-            self.observation_spaces[a]['buying_price'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
-            self.observation_spaces[a]['selling_price'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+        self.battery_obs_space['temperature'] = {'low': 250., 'high': 400.}
+        self.battery_obs_space['soc'] = {'low': 0., 'high': 1.}
+        self.battery_obs_space['demand'] = {'low': 0., 'high': jnp.inf}
+        self.battery_obs_space['generation'] = {'low': 0., 'high': jnp.inf}
+        self.battery_obs_space['buying_price'] = {'low': 0., 'high': jnp.inf}
+        self.battery_obs_space['selling_price'] = {'low': 0., 'high': jnp.inf}
+        obs_is_sequence = [True, True, True, True, True, True]
+
+        # for a in self.battery_agents:
+        #     self.observation_spaces[a]['temperature'] = spaces.Box(low=250., high=400., shape=(1,))
+        #     self.observation_spaces[a]['soc'] = spaces.Box(low=0., high=1., shape=(1,))
+        #     self.observation_spaces[a]['demand'] = spaces.Box(low=0., high=1., shape=(1,))
+        #     self.observation_spaces[a]['generation'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+        #     self.observation_spaces[a]['buying_price'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+        #     self.observation_spaces[a]['selling_price'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
 
         # Add optional 'State of Health' in observation space
-        if settings['soh']:
+        if 'soh' in settings['battery_obs']:
             # spaces['soh'] = Box(low=0, high=1, shape=(1,), dtype=np.float32)
             self._obs_battery_agents_keys.append('soh')
-            for a in self.battery_agents:
-                self.observation_spaces[a]['soh'] = spaces.Box(low=0., high=1., shape=(1,))
+            self.battery_obs_space['soh'] = {'low': 0., 'high': 1.}
+            obs_is_sequence.append(True)
 
-        if settings['day_of_year']:
+        if 'day_of_year' in settings['battery_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             self._obs_battery_agents_keys.append('sin_day_of_year')
             self._obs_battery_agents_keys.append('cos_day_of_year')
-            for a in self.battery_agents:
-                self.observation_spaces[a]['sin_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
-                self.observation_spaces[a]['cos_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
+            self.battery_obs_space['sin_day_of_year'] = {'low': -1, 'high': 1}
+            self.battery_obs_space['cos_day_of_year'] = {'low': -1, 'high': 1}
+            obs_is_sequence.append(False)
+            obs_is_sequence.append(False)
 
-        if settings['seconds_of_day']:
+        if 'seconds_of_day' in settings['battery_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             self._obs_battery_agents_keys.append('sin_seconds_of_day')
             self._obs_battery_agents_keys.append('cos_seconds_of_day')
-            for a in self.battery_agents:
-                self.observation_spaces[a]['sin_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
-                self.observation_spaces[a]['cos_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
+            self.battery_obs_space['sin_seconds_of_day'] = {'low': -1, 'high': 1}
+            self.battery_obs_space['cos_seconds_of_day'] = {'low': -1, 'high': 1}
+            obs_is_sequence.append(False)
+            obs_is_sequence.append(False)
 
-        if settings['energy_level']:
-            self._obs_battery_agents_keys.append('energy_level')
-            for i, a in enumerate(self.battery_agents):
-                min_energy = batteries[i].nominal_capacity * batteries[i].soc_state.soc_min * batteries[i].v_max
-                max_energy = batteries[i].nominal_capacity * batteries[i].soc_state.soc_max * batteries[i].v_min
-                self.observation_spaces[a]['energy_level'] = spaces.Box(low=min_energy, high=max_energy, shape=(1,))
+        # if 'energy_level' in settings['battery_obs']:
+        #     self._obs_battery_agents_keys.append('energy_level')
+        #     for i, a in enumerate(self.battery_agents):
+        #         min_energy = batteries[i].nominal_capacity * batteries[i].soc_state.soc_min * batteries[i].v_max
+        #         max_energy = batteries[i].nominal_capacity * batteries[i].soc_state.soc_max * batteries[i].v_min
+        #         self.observation_spaces[a]['energy_level'] = spaces.Box(low=min_energy, high=max_energy, shape=(1,))
 
 
-        if settings['network_REC_plus']:
+        if 'network_REC_plus' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_plus')
-            for a in self.battery_agents:
-                self.observation_spaces[a]['network_REC_plus'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+            self.battery_obs_space['network_REC_plus'] = {'low': 0, 'high': jnp.inf}
 
-        if settings['network_REC_minus']:
+        if 'network_REC_minus' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_minus')
-            for a in self.battery_agents:
-                self.observation_spaces[a]['network_REC_minus'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+            self.battery_obs_space['network_REC_minus'] = {'low': 0, 'high': jnp.inf}
 
-        if settings['network_REC_diff']:
+        if 'network_REC_diff' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_diff')
-            for a in self.battery_agents:
-                self.observation_spaces[a]['network_REC_diff'] = spaces.Box(low=-jnp.inf, high=jnp.inf, shape=(1,))
+            self.battery_obs_space['network_REC_diff'] = {'low': -jnp.inf, 'high': jnp.inf}
 
-        # if settings['incentive']:
-        #     self._obs_battery_agents_keys.append('incentive')
-        #     for a in self.battery_agents:
-        #         self.observation_spaces[a]['incentive'] = Box(low=0., high=1., shape=(1,))
+        indices = np.argsort(np.logical_not(obs_is_sequence))
 
+        self._obs_battery_agents_keys = [self._obs_battery_agents_keys[i] for i in indices]
+
+        self.num_battery_obs_sequences = np.sum(obs_is_sequence)
 
         self._obs_battery_agents_idx = {key: i for i, key in enumerate(self._obs_battery_agents_keys)}
 
-        self._obs_rec_keys = ['demands_base_battery_houses', 'demands_battery_battery_houses', 'generations_base_battery_houses',
-                              'demands_passive_houses', 'generations_passive_houses']
+        self.observation_spaces = OrderedDict([(a, spaces.Box(jnp.array([self.battery_obs_space[key]['low'] for key in self._obs_keys]), jnp.array([self.battery_obs_space[key]['high'] for key in self._obs_keys]), shape=(len(self._obs_keys),)))
+                                               for a in self.battery_agents])
 
-        self.observation_spaces[self.rec_agent]['demands_base_battery_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))
-        self.observation_spaces[self.rec_agent]['demands_battery_battery_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))
-        self.observation_spaces[self.rec_agent]['generations_base_battery_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))
-        self.observation_spaces[self.rec_agent]['demands_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))
-        self.observation_spaces[self.rec_agent]['generations_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))
+
+
+        self._obs_rec_keys = ['demands_base_battery_houses', 'demands_battery_battery_houses', 'generations_base_battery_houses']
+
+        rec_obs_space = {'demands_base_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,)),
+                         'demands_battery_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,)),
+                         'generations_base_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))}
+
+        if self.num_passive_houses > 0:
+            rec_obs_space['demands_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
+            rec_obs_space['generations_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
+            self._obs_rec_keys += ['demands_passive_houses', 'generations_passive_houses']
+
         if 'day_of_year' in settings['REC_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             self._obs_rec_keys.append('sin_day_of_year')
             self._obs_rec_keys.append('cos_day_of_year')
-            self.observation_spaces[self.rec_agent]['sin_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
-            self.observation_spaces[self.rec_agent]['cos_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
+            rec_obs_space['sin_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
+            rec_obs_space['cos_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
         if 'seconds_of_day' in settings['REC_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             self._obs_rec_keys.append('sin_seconds_of_day')
             self._obs_rec_keys.append('cos_seconds_of_day')
-            self.observation_spaces[self.rec_agent]['sin_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
-            self.observation_spaces[self.rec_agent]['cos_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
+            rec_obs_space['sin_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
+            rec_obs_space['cos_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
 
-
-        self.observation_spaces = {key: spaces.Dict(sp) for key, sp in self.observation_spaces.items()}
+        self.observation_spaces[self.rec_agent] = spaces.Dict(rec_obs_space)
 
         self._obs_rec_idx = {key: i for i, key in enumerate(self._obs_rec_keys)}
+
+        i_max_action = self.BESS.get_feasible_current(battery_states, battery_states.soc_state.soc_min, dt=self.env_step)[0]
+        i_min_action = self.BESS.get_feasible_current(battery_states, battery_states.soc_state.soc_max, dt=self.env_step)[1]
+
+        self.action_spaces = {a: spaces.Box(i_min_action[i], i_max_action[i], shape=(1,)) for i, a in enumerate(self.battery_agents)}
+        self.action_spaces[self.rec_agent] = spaces.Box(0., 1., shape=(self.num_battery_agents,))
 
         self.init_state = EnvState(battery_states=battery_states,
                                    iter=0,
                                    is_rec_turn=False,
                                    timeframe=0,
                                    done=jnp.zeros(shape=(self.num_agents,), dtype=bool),
-                                   step=-1)
+                                   step=-1,
+                                   demands_battery_houses=demands_battery_houses,
+                                   demands_passive_houses=demands_passive_houses)
 
     @partial(jax.vmap, in_axes=(None, 0, None))
     def _get_generations(self, gen_data, timestep):
@@ -255,20 +316,26 @@ class RECEnv(MultiAgentEnv):
     def _get_buying_prices(self, buy_price_data, timestep):
         return BuyingPrice.get_buying_price(buy_price_data, timestep)
 
+    @partial(jax.vmap, in_axes=(None, 0, None))
+    def _get_temperatures(self, temperature_data, timestep):
+        return AmbientTemperature.get_amb_temperature(temperature_data, timestep)
+
     def _calc_balances(self, state: EnvState, past_shift=0.):
-        demands_batteries = self._get_demands(self.demands_battery_houses, state.timeframe-past_shift)
+        demands_batteries = self._get_demands(state.demands_battery_houses, state.timeframe-past_shift)
         generations_batteries = self._get_generations(self.generations_battery_houses, state.timeframe-past_shift)
 
-        power_batteries = state.battery_states.electrical_state.p       # TODO NON HO IDEA SE SIA CORRETTO CHECK SIGN
+        power_batteries = state.battery_states.electrical_state.p
 
         balance_battery_houses = generations_batteries - demands_batteries - power_batteries
 
-        demands_passive_houses = self._get_demands(self.demands_passive_houses, state.timeframe-past_shift)
-        generations_passive_houses = self._get_generations(self.generations_passive_houses, state.timeframe-past_shift)
+        if self.num_passive_houses > 0:
+            demands_passive_houses = self._get_demands(state.demands_passive_houses, state.timeframe-past_shift)
+            generations_passive_houses = self._get_generations(self.generations_passive_houses, state.timeframe-past_shift)
+            balance_passive_houses = generations_passive_houses - demands_passive_houses
 
-        balance_passive_houses = generations_passive_houses - demands_passive_houses
-
-        balances = jnp.concat([balance_battery_houses, balance_passive_houses])
+            balances = jnp.concat([balance_battery_houses, balance_passive_houses])
+        else:
+            balances = balance_battery_houses
 
         balance_plus = jnp.where(balances >= 0, balances, 0).sum()
         balance_minus = jnp.where(balances < 0, balances, 0).sum()
@@ -277,7 +344,7 @@ class RECEnv(MultiAgentEnv):
 
 
     def get_obs(self, state: EnvState) -> Dict[str, chex.Array]:
-        demands_batteries = self._get_demands(self.demands_battery_houses, state.timeframe)
+        demands_batteries = self._get_demands(state.demands_battery_houses, state.timeframe)
         generations_batteries = self._get_generations(self.generations_battery_houses, state.timeframe)
         buying_price_batteries = self._get_buying_prices(self.buying_prices_battery_houses, state.timeframe)
         selling_price_batteries = self._get_selling_prices(self.selling_prices_battery_houses, state.timeframe)
@@ -285,44 +352,55 @@ class RECEnv(MultiAgentEnv):
         def batteries_turn():
             temperatures = state.battery_states.thermal_state.temp
             soc = state.battery_states.soc_state.soc
-
-            agg_obs = {'demand': demands_batteries,
-                   'generation': generations_batteries,
-                   'buying_price': buying_price_batteries,
-                   'selling_price': selling_price_batteries,
-                   'temperature': temperatures,
-                   'soc': soc}
-
-            if 'soh' in self._obs_battery_agents_keys:
-                agg_obs['soh'] = state.battery_states.soh
-            if 'sin_seconds_of_day' in self._obs_battery_agents_keys:
-                agg_obs['sin_seconds_of_day'] = jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.sin(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe))
-            if 'cos_seconds_of_day' in self._obs_battery_agents_keys:
-                agg_obs['cos_seconds_of_day'] = jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.cos(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe))
-            if 'sin_day_of_year' in self._obs_battery_agents_keys:
-                agg_obs['sin_day_of_year'] = jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.sin(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe))
-            if 'cos_day_of_year' in self._obs_battery_agents_keys:
-                agg_obs['cos_day_of_year'] = jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.cos(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe))
-            if 'energy_level' in self._obs_battery_agents_keys:
-                agg_obs['energy_level'] = state.battery_states.c_max * state.battery_states.electrical_state.v * state.battery_states.soc_state.soc
-
             balance_plus, balance_minus = self._calc_balances(state, past_shift=self.env_step)
 
-            if 'network_REC_plus' in self._obs_battery_agents_keys:
-                agg_obs['network_REC_plus'] = jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus)
-            if 'network_REC_minus' in self._obs_battery_agents_keys:
-                agg_obs['network_REC_minus'] = jnp.full(shape=(self.num_battery_agents,), fill_value=balance_minus)
-            if 'network_REC_diff' in self._obs_battery_agents_keys:
-                agg_obs['network_REC_diff'] = jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus-balance_minus)
+            obs_list = []
 
-            obs = {a: {key: agg_obs[key][i] for key in self._obs_battery_agents_keys} for i, a in enumerate(self.battery_agents)}
+            for key in self._obs_battery_agents_keys:
+                match key:
+                    case 'temperature':
+                        obs_list.append(temperatures)
+                    case 'soc':
+                        obs_list.append(soc)
+                    case 'soh':
+                        obs_list.append(state.battery_states.soh)
+                    case 'demand':
+                        obs_list.append(demands_batteries)
+                    case 'generation':
+                        obs_list.append(generations_batteries)
+                    case 'buying_price':
+                        obs_list.append(buying_price_batteries)
+                    case 'selling_price':
+                        obs_list.append(selling_price_batteries)
+                    case 'sin_day_of_year':
+                        obs_list.append(jnp.full(shape=(self.num_battery_agents,),
+                                                 fill_value=jnp.sin(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe)))
+                    case 'cos_day_of_year':
+                        obs_list.append(jnp.full(shape=(self.num_battery_agents,),
+                                                 fill_value=jnp.cos(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe)))
+                    case 'sin_seconds_of_day':
+                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.sin(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)))
+                    case 'cos_seconds_of_day':
+                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.cos(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)))
+                    case 'network_REC_plus':
+                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus))
+                    case 'network_REC_minus':
+                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=balance_minus))
+                    case 'network_REC_diff':
+                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus-balance_minus))
+
+            obs_mat = jnp.array(obs_list)
+
+            obs = {a: obs_mat[:, i] for i, a in enumerate(self.battery_agents)}
 
 
             rec_obs = {'demand_base_battery_houses': jnp.zeros(self.num_battery_agents),
                        'demands_battery_battery_houses': jnp.zeros(self.num_battery_agents),
-                       'generations_battery_houses': jnp.zeros(self.num_battery_agents),
-                       'demands_passive_houses': jnp.zeros(self.num_passive_houses),
-                       'generations_passive_houses': jnp.zeros(self.num_passive_houses)}
+                       'generations_battery_houses': jnp.zeros(self.num_battery_agents)}
+
+            if self.num_passive_houses > 0:
+                rec_obs['demands_passive_houses'] = jnp.zeros(self.num_passive_houses)
+                rec_obs['generations_passive_houses'] = jnp.zeros(self.num_passive_houses)
 
             for o in ['sin_seconds_of_day', 'cos_seconds_of_day', 'sin_day_of_year', 'cos_day_of_year']:
                 if o in self._obs_rec_keys:
@@ -333,26 +411,17 @@ class RECEnv(MultiAgentEnv):
             return obs
 
         def rec_turn():
-            obs_battery_agents = {'demand': 0.,
-                       'generation': 0.,
-                       'buying_price': 0.,
-                       'selling_price': 0.,
-                       'temperature': 0.,
-                       'soc': 0.}
-
-            for o in ['soh', 'sin_seconds_of_day', 'cos_seconds_of_day', 'sin_day_of_year', 'cos_day_of_year', 'energy_level', 'network_REC_plus', 'network_REC_minus', 'network_REC_diff']:
-                obs_battery_agents[o] = 0.
+            obs_battery_agents = jnp.zeros((len(self._obs_battery_agents_keys),))
 
             obs = {a: obs_battery_agents for a in self.battery_agents}
 
-            demands_passive_houses = self._get_demands(self.demands_passive_houses, state.timeframe)
-            generations_passive_houses = self._get_generations(self.generations_passive_houses, state.timeframe)
-
             rec_obs = {'demand_base_battery_houses': demands_batteries,
-                       'demands_battery_battery_houses': state.battery_states.electrical_state.p,                   # TODO NON HO IDEA SE SIA CORRETTO CHECK SIGN
-                       'generations_battery_houses': generations_batteries,
-                       'demands_passive_houses': demands_passive_houses,
-                       'generations_passive_houses': generations_passive_houses}
+                       'demands_battery_battery_houses': state.battery_states.electrical_state.p,
+                       'generations_battery_houses': generations_batteries}
+
+            if self.num_passive_houses > 0:
+                rec_obs['demand_passive_houses'] = self._get_demands(state.demands_passive_houses, state.timeframe)
+                rec_obs['generations_passive_houses'] = self._get_generations(self.generations_passive_houses, state.timeframe)
 
             if 'sin_seconds_of_day' in self._obs_rec_keys:
                 rec_obs['sin_seconds_of_day'] = jnp.sin(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)
@@ -370,7 +439,21 @@ class RECEnv(MultiAgentEnv):
         return jax.lax.cond(state.is_rec_turn, rec_turn, batteries_turn)
 
     def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], EnvState]:
-        return self.get_obs(self.initial_state), self.init_state
+        state = self.init_state
+        key, key_ = jax.random.split(key)
+        profiles_indices = jax.random.choice(key_, self.dem_matrices_battery_houses.shape[1], shape=(self.num_battery_agents,))
+        demands = jax.vmap(Demand.build_demand_data, in_axes=(0, None))(self.dem_matrices_battery_houses[jnp.arange(self.num_battery_agents), profiles_indices],
+                                                                        self.env_step)
+        state = state.replace(demands_battery_houses=demands)
+
+        if self.num_passive_houses > 0:
+            profiles_indices = jax.random.choice(key_, self.dem_matrices_passive_houses.shape[1],
+                                                 shape=(self.num_passive_houses,))
+            demands = jax.vmap(Demand.build_demand_data, in_axes=(0, None))(self.dem_matrices_passive_houses[jnp.arange(self.num_battery_agents), profiles_indices],
+                                                                            self.env_step)
+            state.replace(demands_passive_houses=demands)
+
+        return self.get_obs(state), state
 
     def step_env(self, key: chex.PRNGKey, state: EnvState, actions: Dict[str, chex.Array]) -> Tuple[Dict[str, chex.Array], EnvState, Dict[str, float], Dict[str, bool], Dict]:
         return jax.lax.cond(state.is_rec_turn,
@@ -386,19 +469,16 @@ class RECEnv(MultiAgentEnv):
 
         tot_incentives = self._calc_rec_incentives(state, self_consumption)
 
-        rec_reward = self._calc_rec_reward(state, self_consumption)
+        rec_reward = self._calc_rec_reward(self_consumption, actions[self.rec_agent])
 
         r_glob = tot_incentives * actions[self.rec_agent]
-
-
-
 
 
         terminated = state.battery_states.soh <= self._termination['min_soh']
 
         truncated = jnp.logical_or(state.iter >= self._termination['max_iterations'],
                                    jnp.logical_or(jnp.logical_or(jax.vmap(Demand.is_run_out_of_data, in_axes=(0, None))(
-                                       self.demands_battery_houses, state.timeframe),
+                                       state.demands_battery_houses, state.timeframe),
                                                                  jax.vmap(Generation.is_run_out_of_data,
                                                                           in_axes=(0, None))(
                                                                      self.generations_battery_houses, state.timeframe)),
@@ -412,10 +492,6 @@ class RECEnv(MultiAgentEnv):
         new_state = state.replace(is_rec_turn=False)
 
 
-
-
-
-
         rewards = {a: r_glob[i] for i, a in enumerate(self.battery_agents)}
         rewards[self.rec_agent] = rec_reward
 
@@ -425,29 +501,25 @@ class RECEnv(MultiAgentEnv):
         dones[self.rec_agent] = False
         dones['__all__'] = jnp.all(dones_array)
 
-        packed_info = {'soc': jnp.zeros(self.num_battery_agents),
-                       'soh': jnp.zeros(self.num_battery_agents),
-                       'pure_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
-                                       'r_op': jnp.zeros(self.num_battery_agents),
-                                       'r_deg': jnp.zeros(self.num_battery_agents),
-                                       'r_clipping': jnp.zeros(self.num_battery_agents)},
-                       'norm_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
-                                       'r_op': jnp.zeros(self.num_battery_agents),
-                                       'r_deg': jnp.zeros(self.num_battery_agents),
-                                       'r_clipping': jnp.zeros(self.num_battery_agents)},
-                       'weig_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
-                                       'r_op': jnp.zeros(self.num_battery_agents),
-                                       'r_deg': jnp.zeros(self.num_battery_agents),
-                                       'r_clipping': jnp.zeros(self.num_battery_agents)},
-                       'r_tot': r_glob,
-                       'r_glob': r_glob}
-
-        info = {a: jax.tree.map(lambda val: val[i], packed_info) for i, a in enumerate(self.battery_agents)}
-
-
-        info[self.rec_agent] = {'self_consumption': self_consumption,
-                                'tot_incentives': tot_incentives,
-                                'reward': rec_reward}
+        info = {'soc': jnp.zeros(self.num_battery_agents),
+                'soh': jnp.zeros(self.num_battery_agents),
+                'pure_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
+                                'r_op': jnp.zeros(self.num_battery_agents),
+                                'r_deg': jnp.zeros(self.num_battery_agents),
+                                'r_clipping': jnp.zeros(self.num_battery_agents)},
+                'norm_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
+                                'r_op': jnp.zeros(self.num_battery_agents),
+                                'r_deg': jnp.zeros(self.num_battery_agents),
+                                'r_clipping': jnp.zeros(self.num_battery_agents)},
+                'weig_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
+                                'r_op': jnp.zeros(self.num_battery_agents),
+                                'r_deg': jnp.zeros(self.num_battery_agents),
+                                'r_clipping': jnp.zeros(self.num_battery_agents)},
+                'r_tot': r_glob,
+                'r_glob': r_glob,
+                'self_consumption': self_consumption,
+                'tot_incentives': tot_incentives,
+                'rec_reward': rec_reward}
 
         return self.get_obs(new_state), new_state, rewards, dones, info
 
@@ -457,43 +529,48 @@ class RECEnv(MultiAgentEnv):
 
         new_timeframe = state.timeframe + self.env_step
         last_v = state.battery_states.electrical_state.v
-        i_max, i_min = jax.vmap(self.BESS_class.get_feasible_current, in_axes=(0, 0, None))(state.battery_states, state.battery_states.soc_state.soc, self.env_step)
+        i_max, i_min = jax.vmap(self.BESS.get_feasible_current, in_axes=(0, 0, None))(state.battery_states, state.battery_states.soc_state.soc, self.env_step)
 
         i_to_apply = jnp.clip(actions, i_min, i_max)
 
-        to_load = last_v * i_to_apply
+        old_soh = state.battery_states.soh
 
-        demands = self._get_demands(self.demands_battery_houses, state.timeframe)
+        t_amb = self._get_temperatures(self.temp_ambient, new_timeframe)
+
+        new_battery_states = jax.vmap(self.BESS.step, in_axes=(0, 0, None, 0))(state.battery_states, i_to_apply, self.env_step, t_amb)
+
+        to_load = new_battery_states.electrical_state.p
+
+        demands = self._get_demands(state.demands_battery_houses, state.timeframe)
         generations = self._get_generations(self.generations_battery_houses, state.timeframe)
 
         to_trade = generations - demands - to_load
 
-        old_soh = state.battery_states.soh
-
-        new_battery_states = jax.vmap(self.BESS_class.step, in_axes=(0, 0, None))(state.battery_states, i_to_apply, self.env_step)
 
         buying_prices = self._get_buying_prices(self.buying_prices_battery_houses, state.timeframe)
         selling_prices = self._get_selling_prices(self.selling_prices_battery_houses, state.timeframe)
 
         r_trading = jnp.minimum(0, to_trade) * buying_prices + jnp.maximum(0, to_trade) * selling_prices
 
-        r_clipping = jnp.abs((actions - i_to_apply) * last_v)
+        r_clipping = -jnp.abs((actions - i_to_apply) * last_v)
 
         r_deg = self._calc_deg_reward(old_soh, new_battery_states.soh, new_battery_states.nominal_cost, self._termination['min_soh'])
 
-        r_op = self._calc_op_reward(new_battery_states.nominal_cost,
-                                    new_battery_states.nominal_capacity * new_battery_states.nominal_voltage / 1000,
-                                    new_battery_states.c_max * new_battery_states.nominal_voltage / 1000,
-                                    new_battery_states.nominal_dod,
-                                    new_battery_states.nominal_lifetime,
-                                    new_battery_states.nominal_voltage,
-                                    new_battery_states.electrical_state.p,
-                                    new_battery_states.electrical_state.r0,
-                                    new_battery_states.electrical_state.rc.resistance,
-                                    new_battery_states.soc_state.soc,
-                                    new_battery_states.electrical_state.p <= 0)
+        # r_op = self._calc_op_reward(new_battery_states.nominal_cost,
+        #                             new_battery_states.nominal_capacity * new_battery_states.nominal_voltage / 1000,
+        #                             new_battery_states.c_max * new_battery_states.nominal_voltage / 1000,
+        #                             new_battery_states.nominal_dod,
+        #                             new_battery_states.nominal_lifetime,
+        #                             new_battery_states.nominal_voltage,
+        #                             new_battery_states.electrical_state.p,
+        #                             new_battery_states.electrical_state.r0,
+        #                             new_battery_states.electrical_state.rc.resistance,
+        #                             new_battery_states.soc_state.soc,
+        #                             new_battery_states.electrical_state.p <= 0)
 
-        norm_r_trading, norm_r_op, norm_r_deg, norm_r_clipping = self._normalize_reward(new_battery_states, r_trading, r_op, r_deg, r_clipping)
+        r_op = jnp.zeros_like(r_deg)
+
+        norm_r_trading, norm_r_op, norm_r_deg, norm_r_clipping = self._normalize_reward(state, new_battery_states, r_trading, r_op, r_deg, r_clipping)
         weig_r_trading, weig_r_op, weig_r_deg, weig_r_clipping = (self.trading_coeff * norm_r_trading, self.op_cost_coeff * norm_r_op,
                                                                   self.deg_coeff * norm_r_deg, self.clip_action_coeff * norm_r_clipping)
 
@@ -504,7 +581,7 @@ class RECEnv(MultiAgentEnv):
         terminated = new_battery_states.soh <= self._termination['min_soh']
 
         truncated = jnp.logical_or(new_iteration >= self._termination['max_iterations'],
-                                   jnp.logical_or(jnp.logical_or(jax.vmap(Demand.is_run_out_of_data, in_axes=(0, None))(self.demands_battery_houses, new_timeframe),
+                                   jnp.logical_or(jnp.logical_or(jax.vmap(Demand.is_run_out_of_data, in_axes=(0, None))(state.demands_battery_houses, new_timeframe),
                                                                  jax.vmap(Generation.is_run_out_of_data, in_axes=(0, None))(self.generations_battery_houses, new_timeframe)),
                                                   jnp.logical_or(jax.vmap(BuyingPrice.is_run_out_of_data, in_axes=(0, None))(self.buying_prices_battery_houses, new_timeframe),
                                                                  jax.vmap(SellingPrice.is_run_out_of_data, in_axes=(0, None))(self.selling_prices_battery_houses, new_timeframe))),
@@ -518,33 +595,31 @@ class RECEnv(MultiAgentEnv):
         rewards = {a: r_tot[i] for i, a in enumerate(self.battery_agents)}
         rewards[self.rec_agent] = jnp.array(0.)
 
-        packed_info = {'soc': new_battery_states.soc_state.soc,
-                       'soh': new_battery_states.soh,
-                       'pure_reward': {'r_trad': r_trading,
-                                       'r_op': r_op,
-                                       'r_deg': r_deg,
-                                       'r_clipping': r_clipping},
-                       'norm_reward': {'r_trad': norm_r_trading,
-                                       'r_op': norm_r_op,
-                                       'r_deg': norm_r_deg,
-                                       'r_clipping': norm_r_clipping},
-                       'weig_reward': {'r_trad': weig_r_trading,
-                                       'r_op': weig_r_op,
-                                       'r_deg': weig_r_deg,
-                                       'r_clipping': weig_r_clipping},
-                       'r_tot': r_tot,
-                       'r_glob': jnp.zeros(self.num_battery_agents)}
+        info = {'soc': new_battery_states.soc_state.soc,
+                'soh': new_battery_states.soh,
+                'pure_reward': {'r_trad': r_trading,
+                                'r_op': r_op,
+                                'r_deg': r_deg,
+                                'r_clipping': r_clipping},
+                'norm_reward': {'r_trad': norm_r_trading,
+                                'r_op': norm_r_op,
+                                'r_deg': norm_r_deg,
+                                'r_clipping': norm_r_clipping},
+                'weig_reward': {'r_trad': weig_r_trading,
+                                'r_op': weig_r_op,
+                                'r_deg': weig_r_deg,
+                                'r_clipping': weig_r_clipping},
+                'r_tot': r_tot,
+                'r_glob': jnp.zeros(self.num_battery_agents),
+                'self_consumption': 0.,
+                'tot_incentives': 0.,
+                'rec_reward': 0.}
 
-        info = {a: jax.tree.map(lambda val: val[i], packed_info) for i, a in enumerate(self.battery_agents)}
         dones_array = jnp.logical_or(truncated, terminated)
 
         dones = {a: dones_array[i] for i, a in enumerate(self.battery_agents)}
         dones[self.rec_agent] = False
         dones['__all__'] = jnp.all(dones_array)
-
-        info[self.rec_agent] = {'self_consumption': 0.,
-                                'tot_incentives': 0.,
-                                'reward': 0.}
 
         return self.get_obs(new_state), new_state, rewards, dones, info
 
@@ -588,13 +663,29 @@ class RECEnv(MultiAgentEnv):
 
         return - op_cost_term
 
-    def _normalize_reward(self, battery_states: BessState, r_trading, r_op, r_deg, r_clipping):
-        norm_r_trading = r_trading / self.trad_norm_term
-        norm_r_op = r_op / battery_states.nominal_cost
-        norm_r_clipping = r_clipping / jnp.maximum(jnp.abs(self.demands_battery_houses.max - self.demands_battery_houses.min),
-                                                   jnp.abs(self.generations_battery_houses.max - self.generations_battery_houses.min))
+    def _normalize_reward(self, state: EnvState, battery_states: BessState, r_trading, r_op, r_deg, r_clipping):
 
-        return norm_r_trading, norm_r_op, r_deg, norm_r_clipping
+        if self.use_reward_normalization:
+            norm_r_trading = r_trading / jnp.maximum(self.generations_battery_houses.max * self.selling_prices_battery_houses.max,
+                                                         state.demands_battery_houses.max * self.buying_prices_battery_houses.max)
+            norm_r_op = r_op / battery_states.nominal_cost
+            norm_r_clipping = r_clipping / jnp.maximum(jnp.abs(state.demands_battery_houses.max - self.generations_battery_houses.min),
+                                                       jnp.abs(self.generations_battery_houses.max - state.demands_battery_houses.min))
+
+            return norm_r_trading, norm_r_op, r_deg, norm_r_clipping
+
+        else:
+            return r_trading, r_op, r_deg, r_clipping
+
+
+    def _calc_rec_reward(self, self_consumption, actions):
+        return self_consumption + jnp.var(actions)
+
 
     def _calc_rec_incentives(self, state: EnvState, self_consumption: float):
-        ...
+        valorization_part = self_consumption * self.valorization_incentive_coeff
+        incentivizing_tariff_fixed = self_consumption * self.incentivizing_tariff_coeff
+
+        incentivizing_tariff_variable = self_consumption *  jnp.minimum(self.incentivizing_tariff_max_variable, jnp.maximum(0, self.incentivizing_tariff_baseline_variable - BuyingPrice.get_buying_price(self.market, state.timeframe)))
+
+        return valorization_part + incentivizing_tariff_fixed + incentivizing_tariff_variable

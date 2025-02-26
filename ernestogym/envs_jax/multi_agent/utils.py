@@ -2,6 +2,7 @@
 This module primarily implements the `parameter_generator()` function which
 generates the parameters dict for `EnergyStorageEnv`.
 """
+import random
 from typing import List
 import yaml
 from pint import UnitRegistry
@@ -22,25 +23,25 @@ ureg = UnitRegistry(autoconvert_offset_to_baseunit=True)
 
 def parameter_generator(battery_options: str= BATTERY_OPTIONS,
                         world_options: str = WORLD,
-                        battery_houses: str = 'aaaaaa',
-                        passive_houses: str = 'aaaaaa',
+                        num_battery_houses: int = None,
+                        num_passive_houses: int = None,
                         input_var: str = INPUT_VAR,
-                        electrical_model: List[str] = ECM,
-                        thermal_model: List[str] = R2C_THERMAL,
-                        aging_model: List[str] = BOLUN_MODEL,
+                        electrical_model: str = ECM,
+                        thermal_model: str = R2C_THERMAL,
+                        aging_model: str = BOLUN_MODEL,
                         use_degradation: bool = None,
                         use_fading: bool = None,
                         step: int = None,
                         random_battery_init: bool = None,
                         random_data_init: bool = None,
-                        seed: int = None,
+                        seed: int = 123,
                         max_iterations: int = None,
                         min_soh: float = None,
                         reward_coeff: dict[str, float] = None,
                         use_reward_normalization: bool = None,
                         bypass_yaml_schema: bool = False,
                         spread_factor: float = 1.0,
-                        replacement_cost: float = 3000.0
+                        replacement_cost: float = 3000.0,
                         ) -> dict:
     """
     Generates the parameters dict for `EnergyStorageEnv`.
@@ -48,119 +49,139 @@ def parameter_generator(battery_options: str= BATTERY_OPTIONS,
     with open(world_options, "r") as fin:
         world_settings = yaml.safe_load(fin)
 
+    num_battery_houses = num_battery_houses if num_battery_houses is not None else world_settings['num_battery_houses']
+    num_passive_houses = num_battery_houses if num_passive_houses is not None else world_settings['num_passive_houses']
+
     # Battery parameters retrieved with ErNESTO APIs.
 
-    batteries_params = []
-    for path in listdir(battery_options):
-        battery = read_yaml(path, yaml_type='battery_options', bypass_check=bypass_yaml_schema)
-        battery['battery']['params'] = validate_yaml_parameters(battery['battery']['params'])
-        batteries_params.append(battery)
 
-    electrical_models = []
-    for path in listdir(electrical_model):
-        elec = read_yaml(path, yaml_type='model', bypass_check=bypass_yaml_schema)
-        electrical_models.append(elec)
+    battery = read_yaml(battery_options, yaml_type='battery_options', bypass_check=bypass_yaml_schema)
+    battery['battery']['params'] = validate_yaml_parameters(battery['battery']['params'])
 
-    thermal_models = []
-    for path in listdir(thermal_model):
-        ther = read_yaml(path, yaml_type='model', bypass_check=bypass_yaml_schema)
-        thermal_models.append(ther)
+    if replacement_cost is not None:
+        battery['battery']['params']['nominal_cost'] = replacement_cost
 
-    # Battery submodel configuration retrieved with ErNESTO APIs.
-    # models_config = [read_yaml(electrical_model, yaml_type='model', bypass_check=bypass_yaml_schema),
-    #                  read_yaml(thermal_model, yaml_type='model', bypass_check=bypass_yaml_schema)]
+    batteries_params = [battery['battery']] * num_battery_houses
 
-    battery_houses_data = [read_yaml(path, yaml_type='model', bypass_check=bypass_yaml_schema) for path in listdir(battery_houses)]
-    passive_houses_data = [read_yaml(path, yaml_type='model', bypass_check=bypass_yaml_schema) for path in listdir(passive_houses)]
+    elec = read_yaml(electrical_model, yaml_type='model', bypass_check=bypass_yaml_schema)
+    electrical_models = [elec] * num_battery_houses
 
-    demand = read_csv(world_settings['demand']['path'])
-    TO_FILL = 'a'
+    ther = read_yaml(thermal_model, yaml_type='model', bypass_check=bypass_yaml_schema)
+    thermal_models = [ther] * num_battery_houses
 
-    params = {'batteries': [batteries_params[i].update({'models': [electrical_models[i], thermal_models[i]]}) for i in range(len(batteries_params))],
+    aging_options = {'degradation': use_degradation if use_degradation is not None else world_settings['aging_options']['degradation'],
+                     'fading': use_fading if use_fading is not None else world_settings['aging_options']['fading']}
+
+    model_configs = []
+    if aging_options['degradation']:
+        aging = read_yaml(aging_model, yaml_type='model', bypass_check=bypass_yaml_schema)
+        aging_models = [aging] * num_battery_houses
+
+        for i in range(num_battery_houses):
+            model_configs.append([electrical_models[i], thermal_models[i], aging_models[i]])
+    else:
+        for i in range(num_battery_houses):
+            model_configs.append([electrical_models[i], thermal_models[i]])
+
+
+    demand = read_csv(world_settings['demand']['path']).drop(columns=['delta_time'])
+    demand_profiles = demand.columns.tolist()
+
+    random.seed(seed)
+    random.shuffle(demand_profiles)
+
+    num_profiles_each_house = len(demand_profiles) // (num_battery_houses + num_passive_houses)
+
+    start = 0
+
+    battery_houses_demand_profiles = []
+    for battery_house in range(num_battery_houses):
+        battery_houses_demand_profiles.append(demand_profiles[start:start+num_profiles_each_house])
+        start += num_profiles_each_house
+
+    passive_houses_demand_profiles = []
+    for battery_house in range(num_battery_houses):
+        passive_houses_demand_profiles.append(demand_profiles[start:start + num_profiles_each_house])
+        start += num_profiles_each_house
+
+
+    generation_data = read_csv(world_settings['generation']['path'])['PV']
+    market = read_csv(world_settings['market']['path'])
+    buying_price_data = market['ask']
+    selling_price_data = market['bid']
+
+    temp_data = read_csv(world_settings['temp_amb']['path'])['temp_amb']
+
+    params = {'batteries': batteries_params,
+              'model_configs': model_configs,
               'input_var': input_var,
-              'demands_battery_houses': [{'data': demand[battery_houses_data[i]['demand_profile']],
-                                          'timestep': world_settings['demand']['timestep']} for i in range(len(batteries_params))],
-              'generations_battery_houses': TO_FILL,
-              'selling_prices_battery_houses': TO_FILL,
-              'buying_prices_battery_houses': TO_FILL,
-              'demands_passive_houses': [{'data': demand[battery_houses_data[i]['demand_profile']],
-                                          'timestep': world_settings['demand']['timestep']} for i in range(len(batteries_params))],
-              'generations_passive_houses': TO_FILL,
-              'selling_prices_passive_houses': TO_FILL,
-              'buying_prices_passive_houses': TO_FILL,
+              'demands_battery_houses': [{'data': demand[battery_houses_demand_profiles[i]],
+                                          'timestep': world_settings['demand']['timestep'],
+                                          'demand_profiles': battery_houses_demand_profiles[i],
+                                          'data_usage': world_settings['demand']['data_usage'],
+                                          'path': world_settings['demand']['path']} for i in range(num_battery_houses)],
+              'v': [{'data': generation_data,
+                                              'timestep': world_settings['generation']['timestep'],
+                                              'data_usage': world_settings['generation']['data_usage'],
+                                              'path': world_settings['generation']['path']}] * num_battery_houses,
+              'selling_prices_battery_houses': [{'data': selling_price_data,
+                                                 'timestep': world_settings['market']['timestep'],
+                                                 'data_usage': world_settings['market']['data_usage'],
+                                                 'path': world_settings['market']['path']}] * num_battery_houses,
+              'buying_prices_battery_houses': [{'data': buying_price_data,
+                                                'timestep': world_settings['market']['timestep'],
+                                                'data_usage': world_settings['market']['data_usage'],
+                                                'path': world_settings['market']['path']}] * num_battery_houses,
+              'temp_amb_battery_houses': [{'data': temp_data,
+                                           'timestep': world_settings['temp_amb']['timestep'],
+                                           'data_usage': world_settings['temp_amb']['data_usage'],
+                                           'path': world_settings['temp_amb']['path']}] * num_battery_houses,
 
-              'battery_agents_observations': world_settings['battery_observations'],
-              'rec_agent_observations': world_settings['rec_agent_observations']
+              'demands_passive_houses': [{'data': demand[passive_houses_demand_profiles[i]],
+                                          'timestep': world_settings['demand']['timestep'],
+                                          'demand_profiles': passive_houses_demand_profiles[i],
+                                          'data_usage': world_settings['demand']['data_usage'],
+                                          'path': world_settings['demand']['path']} for i in range(num_passive_houses)],
+              'generations_passive_houses': [{'data': generation_data,
+                                              'timestep': world_settings['generation']['timestep'],
+                                              'data_usage': world_settings['generation']['data_usage'],
+                                              'path': world_settings['generation']['path']}] * num_passive_houses,
+              'selling_prices_passive_houses': [{'data': selling_price_data,
+                                                 'timestep': world_settings['market']['timestep'],
+                                                 'data_usage': world_settings['market']['data_usage'],
+                                                 'path': world_settings['market']['path']}] * num_passive_houses,
+              'buying_prices_passive_houses': [{'data': buying_price_data,
+                                                'timestep': world_settings['market']['timestep'],
+                                                'data_usage': world_settings['market']['data_usage'],
+                                                'path': world_settings['market']['path']}] * num_passive_houses,
+              'temp_amb_passive_houses': [{'data': temp_data,
+                                           'timestep': world_settings['temp_amb']['timestep'],
+                                           'data_usage': world_settings['temp_amb']['data_usage'],
+                                           'path': world_settings['temp_amb']['path']}] * num_passive_houses,
+
+              'market': {'data': read_csv(world_settings['market']['path'])['ask'],
+                         'timestep': world_settings['market']['timestep'],
+                         'data_usage': world_settings['market']['data_usage'],
+                         'spread_factor': spread_factor},
+
+              'battery_obs': world_settings['battery_observations'],
+              'rec_obs': world_settings['rec_observations'],
+
+              'step': step if step is not None else world_settings['step'],
+              'seed': seed if seed is not None else world_settings['seed'],
+              'aging_options': aging_options,
+              'reward': reward_coeff if reward_coeff is not None else world_settings['reward'],
+              'use_reward_normalization': use_reward_normalization if use_reward_normalization is not None else world_settings['use_reward_normalization'],
+              'termination': {'max_iterations': max_iterations if max_iterations is not None else world_settings['termination']['max_iterations'],
+                             'min_soh': min_soh if min_soh is not None else world_settings['termination']['min_soh']},
+
+              'valorization_incentive_coeff': world_settings['valorization_incentive_coeff'],
+              'incentivizing_tariff_coeff': world_settings['incentivizing_tariff_coeff'],
+              'incentivizing_tariff_max_variable': world_settings['incentivizing_tariff_max_variable'],
+              'incentivizing_tariff_baseline_variable': world_settings['incentivizing_tariff_baseline_variable']
+
+
 
     }
-
-    params = {'battery': battery_params['battery'],
-              'input_var': input_var,
-              'models_config': models_config,
-              'demand': {'data': read_csv(world_settings['demand']['path']),
-                         'timestep': world_settings['demand']['timestep'],
-                         'test_profiles': world_settings['demand']['test_profiles'],
-                         'data_usage': world_settings['demand']['data_usage']}}
-    
-    if replacement_cost is not None:
-        params['battery']['params']['nominal_cost'] = replacement_cost
-    
-    params['soh'] = True if 'soh' in world_settings['observations'] else False
-
-    # Exogenous variables data
-    if 'generation' in world_settings['observations']:
-        params['generation'] = {'data': read_csv(world_settings['generation']['path']),
-                                'timestep': world_settings['generation']['timestep'],
-                                'data_usage': world_settings['generation']['data_usage']}
-
-    if 'market' in world_settings:
-        params['market'] = {'data': read_csv(world_settings['market']['path']),
-                            'timestep': world_settings['market']['timestep'],
-                            'data_usage': world_settings['market']['data_usage'],
-                            'spread_factor': spread_factor}
-    
-    if 'temp_amb' in world_settings:
-        params['temp_amb'] = {'data': read_csv(world_settings['temp_amb']['path']),
-                            'timestep': world_settings['temp_amb']['timestep'],
-                            'data_usage': world_settings['temp_amb']['data_usage']}
-
-    # Dummy information about world behavior
-    params['dummy'] = world_settings['dummy']
-    params['dummy']['market']['spread_factor'] = spread_factor
-    
-    # Time info among observations
-    params['day_of_year'] = True if 'day_of_year' in world_settings['observations'] else False
-    params['seconds_of_day'] = True if 'seconds_of_day' in world_settings['observations'] else False
-
-    params['energy_level'] = True if 'energy_level' in world_settings['observations'] else False
-
-    params['step'] = step if step is not None else world_settings['step']
-    params['seed'] = seed if seed is not None else world_settings['seed']
-    params['random_battery_init'] = random_battery_init if random_battery_init is not None else world_settings['random_battery_init']
-    params['random_data_init'] = random_data_init if random_data_init is not None else world_settings['random_data_init']
-
-    # Aging settings
-    params['aging_options'] = {'degradation': use_degradation if use_degradation is not None else world_settings['aging_options']['degradation'],
-                               'fading': use_fading if use_fading is not None else world_settings['aging_options']['fading']}
-
-    assert not (params['aging_options']['degradation'] and params['aging_options']['fading']), \
-        ("Degradation model and fading model cannot be used together (at the moment) since they depend on different "
-         "variables.")
-
-    if params['aging_options']['fading']:
-        assert models_config[0]['use_fading'], ("The selected electrical model ({}) doesn't support parameter fading."
-                                                .format(models_config[0]['class_name']))
-    if params['aging_options']['degradation']:
-        assert not models_config[0]['use_fading'], ("The selected electrical model is not compatible with the aging "
-                                                    "model since it implements fading mechanisms.")
-        models_config.append(read_yaml(aging_model, yaml_type='model', bypass_check=bypass_yaml_schema))
-
-    # Reward settings
-    params['reward'] = reward_coeff if reward_coeff is not None else world_settings['reward']
-    params['use_reward_normalization'] = use_reward_normalization if use_reward_normalization is not None else world_settings['use_reward_normalization']
-
-    # Termination settings
-    params['termination'] = {'max_iterations': max_iterations if max_iterations is not None else world_settings['termination']['max_iterations'],
-                             'min_soh': min_soh if min_soh is not None else world_settings['termination']['min_soh']}
 
     return params

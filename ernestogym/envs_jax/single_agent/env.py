@@ -241,7 +241,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
                 case 'demand':
                     val = Demand.get_demand(state.demand_data, state.time)
 
-                case 'aging':
+                case 'soh':
                     val = state.battery_state.soh
 
                 case 'generation':
@@ -304,9 +304,15 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
 
         to_load = new_battery_state.electrical_state.p
 
-        to_trade = Generation.get_generation(self.generation_data, new_timeframe) - Demand.get_demand(state.demand_data, new_timeframe) - to_load
+        demands = Demand.get_demand(state.demand_data, new_timeframe)
+        generation = Generation.get_generation(self.generation_data, new_timeframe)
 
-        r_trading = jnp.minimum(0, to_trade) * BuyingPrice.get_buying_price(self.buying_price_data, new_timeframe) + jnp.maximum(0, to_trade) * SellingPrice.get_selling_price(self.selling_price_data, new_timeframe)
+        to_trade = generation - demands - to_load
+
+        buying_price = BuyingPrice.get_buying_price(self.buying_price_data, new_timeframe)
+        selling_price = SellingPrice.get_selling_price(self.selling_price_data, new_timeframe)
+
+        r_trading = jnp.minimum(0, to_trade) * buying_price + jnp.maximum(0, to_trade) * selling_price
 
         r_clipping = -jnp.abs((action - i_to_apply) * last_v)
 

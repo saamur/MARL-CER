@@ -48,6 +48,20 @@ def construct_net_from_config(config, rng):
     else:
         raise ValueError('Invalid network name')
 
+def construct_net_from_config_multi_agent(config, rng):
+    config = deepcopy(config)
+    config['OBSERVATION_SPACE_SIZE'] = config['BATTERY_OBSERVATION_SPACE_SIZE']
+    config['ACTION_SPACE_SIZE'] = config['BATTERY_ACTION_SPACE_SIZE']
+
+    @nnx.split_rngs(splits=config['NUM_BATTERY_AGENTS'])
+    @nnx.vmap(in_axes=(None, 0))
+    def get_network(config, rng):
+        return construct_net_from_config(config, rng)
+
+    networks = get_network(config, rng)
+
+    return networks
+
 
 def save_state(network, config, params: dict, val_info:dict=None, env_type='normal', additional_info=''):
     dir_name = (datetime.now().strftime("%Y%m%d_%H%M%S") +
