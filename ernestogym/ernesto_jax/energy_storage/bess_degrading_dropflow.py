@@ -127,7 +127,7 @@ class BatteryEnergyStorageSystem:
                                   c_max=new_c_max,
                                   soh=curr_soh,
                                   iter=state.iter+1,
-                                  elapsed_time=state.elapsed_time+1.)
+                                  elapsed_time=state.elapsed_time+dt)
 
         return new_state
 
