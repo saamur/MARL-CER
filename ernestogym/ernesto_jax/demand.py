@@ -35,7 +35,7 @@ class Demand:
     @classmethod
     @partial(jax.jit, static_argnums=0)
     def get_demand(cls, demand_data: DemandData, t: int) -> jnp.ndarray:
-        return demand_data.data[t // demand_data.timestep]
+        return demand_data.data[jnp.astype(t / demand_data.timestep, int)]
 
     @classmethod
     @partial(jax.jit, static_argnums=0)

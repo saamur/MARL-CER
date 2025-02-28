@@ -42,9 +42,10 @@ class RECEnv(MultiAgentEnv):
     SECONDS_PER_DAY = 60 * 60 * 24
     DAYS_PER_YEAR = 365.25
 
-    def __init__(self, settings):
+    def __init__(self, settings, battery_type):
+        super().__init__(settings['num_battery_agents'] + 1)
         self.num_battery_agents = settings['num_battery_agents']
-        self.num_agents = self.num_battery_agents + 1
+        # self.num_agents = self.num_battery_agents + 1
 
         self.num_passive_houses = settings['num_passive_houses']
 
@@ -60,11 +61,11 @@ class RECEnv(MultiAgentEnv):
 
         batteries = []
 
-        if settings['aging_type'] == 'fading':
+        if battery_type == 'fading':
             self.BESS = bess_fading.BatteryEnergyStorageSystem
-        elif settings['aging_type'] == 'degrading':
+        elif battery_type == 'degrading':
             self.BESS = bess_degrading.BatteryEnergyStorageSystem
-        if settings['aging_type'] == 'degrading_dropflow':
+        if battery_type == 'degrading_dropflow':
             self.BESS = bess_degrading_dropflow.BatteryEnergyStorageSystem
         else:
             raise ValueError(f'Unsupported battery aging: {settings['aging_type']}')
@@ -142,7 +143,7 @@ class RECEnv(MultiAgentEnv):
                                                              settings['generations_battery_houses'],
                                                              settings['selling_prices_battery_houses'],
                                                              settings['buying_prices_battery_houses'],
-                                                             settings['temperatures_battery_houses'],
+                                                             settings['temp_amb_battery_houses'],
                                                              self.num_battery_agents)
 
         if self.num_passive_houses > 0:
@@ -252,7 +253,9 @@ class RECEnv(MultiAgentEnv):
 
         self._obs_battery_agents_idx = {key: i for i, key in enumerate(self._obs_battery_agents_keys)}
 
-        self.observation_spaces = OrderedDict([(a, spaces.Box(jnp.array([self.battery_obs_space[key]['low'] for key in self._obs_keys]), jnp.array([self.battery_obs_space[key]['high'] for key in self._obs_keys]), shape=(len(self._obs_keys),)))
+        self.observation_spaces = OrderedDict([(a, spaces.Box(jnp.array([self.battery_obs_space[key]['low'] for key in self._obs_battery_agents_keys]),
+                                                              jnp.array([self.battery_obs_space[key]['high'] for key in self._obs_battery_agents_keys]),
+                                                              shape=(len(self._obs_battery_agents_keys),)))
                                                for a in self.battery_agents])
 
 
@@ -268,13 +271,13 @@ class RECEnv(MultiAgentEnv):
             rec_obs_space['generations_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
             self._obs_rec_keys += ['demands_passive_houses', 'generations_passive_houses']
 
-        if 'day_of_year' in settings['REC_obs']:
+        if 'day_of_year' in settings['rec_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             self._obs_rec_keys.append('sin_day_of_year')
             self._obs_rec_keys.append('cos_day_of_year')
             rec_obs_space['sin_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
             rec_obs_space['cos_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
-        if 'seconds_of_day' in settings['REC_obs']:
+        if 'seconds_of_day' in settings['rec_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             self._obs_rec_keys.append('sin_seconds_of_day')
             self._obs_rec_keys.append('cos_seconds_of_day')
@@ -320,7 +323,7 @@ class RECEnv(MultiAgentEnv):
     def _get_temperatures(self, temperature_data, timestep):
         return AmbientTemperature.get_amb_temperature(temperature_data, timestep)
 
-    def _calc_balances(self, state: EnvState, past_shift=0.):
+    def _calc_balances(self, state: EnvState, past_shift=0):
         demands_batteries = self._get_demands(state.demands_battery_houses, state.timeframe-past_shift)
         generations_batteries = self._get_generations(self.generations_battery_houses, state.timeframe-past_shift)
 
@@ -394,7 +397,7 @@ class RECEnv(MultiAgentEnv):
             obs = {a: obs_mat[:, i] for i, a in enumerate(self.battery_agents)}
 
 
-            rec_obs = {'demand_base_battery_houses': jnp.zeros(self.num_battery_agents),
+            rec_obs = {'demands_base_battery_houses': jnp.zeros(self.num_battery_agents),
                        'demands_battery_battery_houses': jnp.zeros(self.num_battery_agents),
                        'generations_battery_houses': jnp.zeros(self.num_battery_agents)}
 
@@ -415,7 +418,7 @@ class RECEnv(MultiAgentEnv):
 
             obs = {a: obs_battery_agents for a in self.battery_agents}
 
-            rec_obs = {'demand_base_battery_houses': demands_batteries,
+            rec_obs = {'demands_base_battery_houses': demands_batteries,
                        'demands_battery_battery_houses': state.battery_states.electrical_state.p,
                        'generations_battery_houses': generations_batteries}
 
@@ -489,17 +492,18 @@ class RECEnv(MultiAgentEnv):
                                                           self.selling_prices_battery_houses, state.timeframe))),
                                    )
 
-        new_state = state.replace(is_rec_turn=False)
-
 
         rewards = {a: r_glob[i] for i, a in enumerate(self.battery_agents)}
         rewards[self.rec_agent] = rec_reward
 
         dones_array = jnp.logical_or(truncated, terminated)
+        done_rec = jnp.any(dones_array)
+
+        new_state = state.replace(is_rec_turn=False, done=jnp.concat([dones_array, done_rec[jnp.newaxis]]))
 
         dones = {a: dones_array[i] for i, a in enumerate(self.battery_agents)}
-        dones[self.rec_agent] = False
-        dones['__all__'] = jnp.all(dones_array)
+        dones[self.rec_agent] = done_rec
+        dones['__all__'] = jnp.any(dones_array)         #It makes sense in our case to use any and not all
 
         info = {'soc': jnp.zeros(self.num_battery_agents),
                 'soh': jnp.zeros(self.num_battery_agents),
@@ -525,7 +529,7 @@ class RECEnv(MultiAgentEnv):
 
 
     def step_batteries(self, state: EnvState, actions: Dict[str, chex.Array]) -> Tuple[Dict[str, chex.Array], EnvState, Dict[str, float], Dict[str, bool], Dict]:
-        actions = jnp.array([actions[a] for a in self.num_battery_agents])
+        actions = jnp.array([actions[a].flatten()[0] for a in self.battery_agents])
 
         new_timeframe = state.timeframe + self.env_step
         last_v = state.battery_states.electrical_state.v

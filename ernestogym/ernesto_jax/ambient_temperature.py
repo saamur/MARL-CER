@@ -32,7 +32,7 @@ class AmbientTemperature:
     @classmethod
     @partial(jax.jit, static_argnums=0)
     def get_amb_temperature(cls, temperature_data: TemperatureData, t: int) -> jnp.ndarray:
-        return temperature_data.data[t // temperature_data.timestep]
+        return temperature_data.data[jnp.astype(t / temperature_data.timestep, int)]
 
     @classmethod
     @partial(jax.jit, static_argnums=0)

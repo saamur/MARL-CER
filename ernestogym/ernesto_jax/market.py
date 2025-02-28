@@ -55,8 +55,10 @@ class BuyingPrice:
     @partial(jax.jit, static_argnums=0)
     def get_buying_price(cls, price_data: BuyingPriceData, t: int) -> jnp.ndarray:
         index =  jax.lax.cond(price_data.circular,
-                              lambda: (t // price_data.timestep) % len(price_data.data),
-                              lambda: t // price_data.timestep)
+                              lambda: (t / price_data.timestep) % len(price_data.data),
+                              lambda: t / price_data.timestep)
+
+        index = jnp.astype(index, int)
 
         return price_data.data[index]
 
@@ -98,7 +100,7 @@ class SellingPrice:
     @classmethod
     @partial(jax.jit, static_argnums=0)
     def get_selling_price(cls, demand_data: SellingPriceData, t: int) -> jnp.ndarray:
-        return demand_data.data[t // demand_data.timestep]
+        return demand_data.data[jnp.astype(t / demand_data.timestep, int)]
 
     @classmethod
     @partial(jax.jit, static_argnums=0)

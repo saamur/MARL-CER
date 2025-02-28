@@ -25,7 +25,7 @@ from .wrappers import (
 )
 
 class ActorCritic(nnx.Module):
-    def __init__(self, in_features: int, out_features: int, activation: bool, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, add_logistic_to_actor: bool = False):
+    def __init__(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, add_logistic_to_actor: bool = False):
 
         if act_net_arch is None:
             if net_arch is None:

@@ -156,7 +156,8 @@ def temperature_stress(k_temp, mean_temp, temp_ref):
     :param mean_temp: current battery temperature
     :param temp_ref: ambient temperature
     """
-    return jnp.exp(jnp.float32(k_temp) * (mean_temp - temp_ref) * (temp_ref / mean_temp))
+    return jnp.exp(k_temp * (mean_temp - temp_ref) * (temp_ref / mean_temp))
+    # return jnp.exp(jnp.float32(k_temp) * (mean_temp - temp_ref) * (temp_ref / mean_temp))
 
 def soc_stress(k_soc, soc, soc_ref):
     """
@@ -177,7 +178,8 @@ def time_stress(k_t, t):
     :param k_t: time stress coefficient
     :param t: current battery age
     """
-    return jnp.float32(k_t) * t
+    return k_t * t
+    # return jnp.float32(k_t) * t
 
 
 def dod_bolun_stress(dod, k_delta1, k_delta2, k_delta3):
@@ -191,4 +193,5 @@ def dod_bolun_stress(dod, k_delta1, k_delta2, k_delta3):
     :param k_delta2: second dod stress coefficient
     :param k_delta3: third dod stress coefficient
     """
-    return (jnp.float32(k_delta1) * dod ** jnp.float32(k_delta2) + jnp.float32(k_delta3)) ** (-1)
+    return (k_delta1 * dod ** k_delta2 + k_delta3) ** (-1)
+    # return (jnp.float32(k_delta1) * dod ** jnp.float32(k_delta2) + jnp.float32(k_delta3)) ** (-1)

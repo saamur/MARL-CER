@@ -32,7 +32,7 @@ class Generation:
     @classmethod
     @partial(jax.jit, static_argnums=0)
     def get_generation(cls, generation_data: GenerationData, t: int) -> jnp.ndarray:
-        return generation_data.data[t // generation_data.timestep]
+        return generation_data.data[jnp.astype(t / generation_data.timestep, int)]
 
     @classmethod
     @partial(jax.jit, static_argnums=0)
