@@ -1,6 +1,9 @@
 import os
 from copy import deepcopy
 from datetime import datetime
+
+from flax.core import unfreeze
+
 import orbax.checkpoint as ocp
 import flax.nnx as nnx
 import pickle
@@ -218,6 +221,8 @@ def restore_state_multi_agent(path):
 
     with open(path + '/config.pkl', 'rb') as file:
         config = pickle.load(file)
+
+    config = unfreeze(config)
 
     with open(path + '/params.pkl', 'rb') as file:
         params = pickle.load(file)

@@ -1,0 +1,83 @@
+num_battery_houses: 3
+num_passive_houses: 0
+
+demand:
+  path: "ernestogym/ernesto_jax/data/demand/rse_profiles_train.csv"
+  timestep: 3600 # seconds
+  test_profiles: # column label to use to test the agent
+    - "70"
+    - "71"
+    - "72"
+    - "73"
+    - "74"
+  data_usage: "end" # "circular/end"
+
+generation:
+  path: "ernestogym/ernesto_jax/data/generation/pv_ninja_2015-2019_3kW_train.csv"
+  timestep: 3600 # seconds
+  data_usage: "end" # "circular/end"
+
+temp_amb:
+  path: "ernestogym/ernesto_jax/data/temp_amb/temp_amb_2015-2019_train.csv"
+  timestep: 86400 # seconds
+  data_usage: "end" # "circular/end"
+
+market:
+  path: "ernestogym/ernesto_jax/data/market/gme_2015-2019_train_new.csv"
+  timestep: 3600 # seconds
+  data_usage: "end" # "circular/end"
+
+# Parameters for dummy models of generation and market
+dummy:
+  generator: 10
+  market:
+    ask: 0.00021
+    bid: 0.00014
+  temp_amb: 298.15
+
+battery_observations:
+  - demand
+  - temperature
+  - soc
+  - day_of_year
+  - seconds_of_day
+  - generation
+  - market
+
+rec_observations:
+  - demand
+  - temperature
+  - soc
+  - day_of_year
+  - seconds_of_day
+  - generation
+  - market
+
+# Aging options determining the reward term related to degradation
+# Only one can be set to True (at the moment)
+aging_options:
+  degradation: True
+  fading: False
+
+step: 3600 # in seconds
+random_battery_init: False # battery state initialization: if True it is randomized between declared bounds
+random_data_init: False # timeseries starting point: if True the timeseries starting point is randomly sampled
+seed: 42 # to sample user's demand profile (also initial data and initial battery state if enabled)
+
+termination:
+  max_iterations: null
+  min_soh: 0.6
+
+reward:
+  trading_coeff: 1
+  operational_cost_coeff: 0
+  degradation_coeff: 1
+  clip_action_coeff: 1
+
+use_reward_normalization: True
+
+
+valorization_incentive_coeff: 0.000008
+incentivizing_tariff_coeff: 0.00008
+incentivizing_tariff_max_variable: 0.00004
+incentivizing_tariff_baseline_variable: 0.00018

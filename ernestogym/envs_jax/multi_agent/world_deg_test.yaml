@@ -1,8 +1,8 @@
-num_battery_houses: 5
+num_battery_houses: 3
 num_passive_houses: 0
 
 demand:
-  path: "ernestogym/ernesto_jax/data/demand/rse_profiles_train.csv"
+  path: "ernestogym/ernesto_jax/data/demand/rse_profiles_test.csv"
   timestep: 3600 # seconds
   test_profiles: # column label to use to test the agent
     - "70"
@@ -13,17 +13,17 @@ demand:
   data_usage: "end" # "circular/end"
 
 generation:
-  path: "ernestogym/ernesto_jax/data/generation/pv_ninja_2015-2019_3kW_train.csv"
+  path: "ernestogym/ernesto_jax/data/generation/pv_ninja_2019-2020_3kW_test.csv"
   timestep: 3600 # seconds
   data_usage: "end" # "circular/end"
 
 temp_amb:
-  path: "ernestogym/ernesto_jax/data/temp_amb/temp_amb_2015-2019_train.csv"
+  path: "ernestogym/ernesto_jax/data/temp_amb/temp_amb_2019-2020_test.csv"
   timestep: 86400 # seconds
   data_usage: "end" # "circular/end"
 
 market:
-  path: "ernestogym/ernesto_jax/data/market/gme_2015-2019_train_new.csv"
+  path: "ernestogym/ernesto_jax/data/market/gme_2019-2020_test_new.csv"
   timestep: 3600 # seconds
   data_usage: "end" # "circular/end"
 

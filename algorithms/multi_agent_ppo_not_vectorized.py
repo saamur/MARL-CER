@@ -13,12 +13,17 @@ import optax
 from typing import Sequence, NamedTuple, Any
 import distrax
 
-from jaxmarl.wrappers.baselines import JaxMARLWrapper
-
 import algorithms.utils as utils
 from ernestogym.envs_jax.multi_agent.env import RECEnv
 from algorithms.ppo import ActorCritic
 
+from .wrappers import (
+    LogWrapper,
+    VecEnv,
+    NormalizeVecObservation,
+    NormalizeVecReward,
+    ClipAction,
+)
 
 class StackedActorCritic(ActorCritic):
     @nnx.vmap(in_axes=(0, None, None, None, 0, None, None, None, None))
@@ -90,13 +95,17 @@ class RECActorCritic(nnx.Module):
     def __call__(self, obs):
         data = self.prepare_data(obs)
 
+        # jax.debug.print('data {x}', x=data)
+
         logit = data
         for layer in self.act_layers:
+            # jax.debug.print('aa {x}', x=logit)
             logit = layer(logit)
 
-        # alpha = nnx.softplus(logit).squeeze(axis=-1)
-        alpha = 10000. * nnx.sigmoid(logit).squeeze(axis=-1) + 1e-3
+        alpha = nnx.softplus(logit).squeeze(axis=-1) + 1e-6
+        # jax.debug.print('{x}', x=alpha)
         # alpha = jnp.clip(alpha, max=1e+4)
+        # jax.debug.print('{x}', x=alpha)
 
         pi = distrax.Dirichlet(alpha)
 
@@ -141,6 +150,11 @@ class RECActorCritic(nnx.Module):
 
         return data
 
+
+
+
+
+
     @classmethod
     def activation_from_name(cls, name: str):
         name = name.lower()
@@ -158,18 +172,6 @@ class RECActorCritic(nnx.Module):
             return nnx.elu
         else:
             raise ValueError("'activation' must be 'relu' or 'tanh'")
-
-class VecEnvJaxMARL(JaxMARLWrapper):
-    """Base class for Gymnax wrappers."""
-
-    def __init__(self, env):
-        super().__init__(env)
-        self.reset = jax.vmap(self._env.reset, in_axes=(0,))
-        self.step = jax.vmap(self._env.step, in_axes=(0, 0, 0))
-
-    # provide proxy access to regular attributes of wrapped object
-    def __getattr__(self, name):
-        return getattr(self._env, name)
 
 
 class Transition(NamedTuple):
@@ -200,10 +202,10 @@ class TrainState:
 
 def make_train(config, env):
     config["NUM_UPDATES"] = (
-        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config['NUM_ENVS']
+        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"]
     )
     config["MINIBATCH_SIZE"] = (
-        config['NUM_ENVS'] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
+        config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
 
     config["BATTERY_ACTION_SPACE_SIZE"] = env.action_space(env.battery_agents[0]).shape[0]
@@ -214,53 +216,59 @@ def make_train(config, env):
     config['NUM_BATTERY_AGENTS'] = env.num_battery_agents
     config['PASSIVE_HOUSES'] = (env.num_passive_houses>0)
 
-    env = VecEnvJaxMARL(env)
-
     # env = LogWrapper(env)
     # env = ClipAction(env, low=env_params.i_min_action, high=env_params.i_max_action)
     # if config["NORMALIZE_ENV"]:
     #     env = NormalizeVecObservation(env)
     #     env = NormalizeVecReward(env, config["GAMMA"])
 
-    def schedule_builder(lr):
-        def linear_schedule(count):
-            frac = (
-                1.0
-                - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
-                / config["NUM_UPDATES"]
-            )
-            return lr * frac
+    def linear_schedule(count):
+        frac = (
+            1.0
+            - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
+            / config["NUM_UPDATES"]
+        )
+        return config["LR"] * frac
 
-        if config["ANNEAL_LR"]:
-            return linear_schedule
-        else:
-            return lr
+    def linear_schedule_bat(count):
+        frac = (
+            1.0
+            - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
+            / config["NUM_UPDATES"]
+        )
+        return config["LR"] * config['NUM_BATTERY_AGENTS'] * frac
+
+
 
     _rng = nnx.Rngs(123)
     network_batteries = utils.construct_battery_net_from_config_multi_agent(config, _rng)
     _rng = nnx.Rngs(222)
     network_rec = utils.construct_rec_net_from_config_multi_agent(config, _rng)
 
-    network_rec
-
-    tx_bat = optax.chain(
-        optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-        optax.adam(learning_rate=schedule_builder(config['LR_BATTERIES']), eps=1e-5),
-    )
-    tx_rec = optax.chain(
-        optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-        optax.adam(learning_rate=schedule_builder(config['LR_REC']), eps=1e-5),
-    )
+    if config["ANNEAL_LR"]:
+        tx = optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optax.adam(learning_rate=linear_schedule, eps=1e-5),
+        )
+        tx_bat = optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optax.adam(learning_rate=linear_schedule_bat, eps=1e-5),
+        )
+    else:
+        tx = optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optax.adam(config["LR"], eps=1e-5),
+        )
+        tx_bat=tx
 
     optimizer_batteries = nnx.Optimizer(network_batteries, tx_bat)
-    optimizer_rec = nnx.Optimizer(network_rec, tx_rec)
+    optimizer_rec = nnx.Optimizer(network_rec, tx)
 
     graph_def, state = nnx.split((network_batteries, optimizer_batteries, network_rec, optimizer_rec))
 
     train_state = TrainState(graph_def=graph_def, state=state)
 
     return env, train_state
-
 
 # @partial(jax.jit, static_argnums=(0, 4, 6))
 def test_network(env: RECEnv, env_params, train_state, rng, num_iter, curr_iter=0, print_data=False):
@@ -310,8 +318,8 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
 
     # INIT ENV
     rng, _rng = jax.random.split(rng)
-    reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
-    obsv, env_state = env.reset(reset_rng)
+    # reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
+    obsv, env_state = env.reset(_rng)
 
     if validate:
         info = test_network(val_env, val_params, train_state, val_rng, val_num_iters, print_data=False)
@@ -341,32 +349,25 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
             # print(f'aaa {config['BATTERY_OBSERVATION_SPACE_SIZE']}')
             # print(last_obs_batteries.shape)
 
-            last_obs_batteries_num_batteries_first = jnp.swapaxes(last_obs_batteries, 0, 1)
-            pi, value_batteries = networks_batteries(last_obs_batteries_num_batteries_first)
+            pi, value_batteries = networks_batteries(last_obs_batteries)
 
-            actions_batteries = pi.sample(seed=_rng)                # batteries first
-            log_prob_batteries = pi.log_prob(actions_batteries)     # batteries first
+            actions_batteries = pi.sample(seed=_rng)
+            log_prob_batteries = pi.log_prob(actions_batteries)
 
-            value_batteries, actions_batteries, log_prob_batteries = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1),
-                                                                                  (value_batteries, actions_batteries, log_prob_batteries)) #num_envs first
-
+            # print(f'gddbfddbgffxgn {actions_batteries.shape}')
 
             # actions_batteries = jnp.zeros((env.num_battery_agents,))
             # log_prob_batteries = jnp.ones_like(actions_batteries)
 
-            actions_first = {env.battery_agents[i]: actions_batteries[:, i] for i in range(env.num_battery_agents)}#zip(env.battery_agents, actions_batteries)}
-            actions_first[env.rec_agent] = jnp.zeros((config['NUM_ENVS'], env.num_battery_agents))
+            actions_first = {env.battery_agents[i]: actions_batteries[i] for i in range(env.num_battery_agents)}#zip(env.battery_agents, actions_batteries)}
+            actions_first[env.rec_agent] = jnp.zeros(env.num_battery_agents)
 
             # print(actions_first)
 
-            # print(f'STATE {jax.tree.map(lambda x: x.shape, env_state)}')
-            # print(f'ACTIONS {jax.tree.map(lambda x: x.shape, actions_first)}')
-
             # STEP ENV
             rng, _rng = jax.random.split(rng)
-            rng_step = jax.random.split(_rng, config["NUM_ENVS"])
             obsv, env_state, reward_first, done_first, info_first = env.step(
-                rng_step, env_state, actions_first
+                _rng, env_state, actions_first
             )
 
             info_first['actions'] = actions_first
@@ -377,7 +378,7 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
 
             # print(f'rec_obs {jax.tree.map(lambda x: x.shape, rec_obsv)}')
 
-            pi, value_rec = network_rec(rec_obsv)     #DA RIMETTERE
+            pi, value_rec = network_rec(rec_obsv)
 
             actions_rec = pi.sample(seed=_rng)
             # actions_rec = jnp.ones(env.num_battery_agents) / env.num_battery_agents
@@ -386,49 +387,27 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
 
             log_probs_rec = pi.log_prob(actions_rec)
 
-
-
-
-
-
-            # actions_rec = jnp.zeros((config['NUM_ENVS'], env.num_battery_agents))
-            # log_probs_rec = jnp.zeros((config['NUM_ENVS'],))
-            # value_rec = jnp.zeros((config['NUM_ENVS'],))
-
-
-
-
-
-
-
-            actions_second = {agent: jnp.zeros((config['NUM_ENVS'], 1)) for agent in env.battery_agents}
-            # actions_second[env.rec_agent] = actions_rec
+            actions_second = {agent: jnp.array([0.]) for agent in env.battery_agents}
             actions_second[env.rec_agent] = actions_rec
 
-            assert actions_rec.shape == (config['NUM_ENVS'], env.num_battery_agents)
-
-            # print(f'STATE {jax.tree.map(lambda x: x.shape, env_state)}')
-            # print(f'ACTIONS {jax.tree.map(lambda x: x.shape, actions_second)}')
-
             rng, _rng = jax.random.split(rng)
-            rng_step = jax.random.split(_rng, config["NUM_ENVS"])
             obsv, env_state, reward_second, done_second, info_second = env.step(
-                rng_step, env_state, actions_second
+                _rng, env_state, actions_second
             )
 
             info_second['actions'] = actions_second
 
             done = jax.tree.map(jnp.logical_or, done_first, done_second)
-            done_batteries = jnp.stack([done[a] for a in env.battery_agents], axis=1)
+            done_batteries = jnp.array([done[a] for a in env.battery_agents])
             done_rec = done[env.rec_agent]
 
             rewards_tot = jax.tree_map(lambda x, y: x + y, reward_first, reward_second)
-            rewards_batteries = jnp.stack([rewards_tot[a] for a in env.battery_agents], axis=1)
+            rewards_batteries = jnp.array([rewards_tot[a] for a in env.battery_agents])
             reward_rec = rewards_tot[env.rec_agent]
 
             info = jax.tree.map(lambda  x, y: x + y, info_first, info_second)
 
-            obs_batteries = jnp.stack([obsv[a] for a in env.battery_agents], axis=1)
+            obs_batteries = jnp.vstack([obsv[a] for a in env.battery_agents])
 
 
             transition = Transition(
@@ -454,8 +433,7 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
         # CALCULATE ADVANTAGE
         train_state, env_state, last_obs_batteries, rng = runner_state
         networks_batteries, optimizer_batteries, network_rec, optimizer_rec = nnx.merge(train_state.graph_def, train_state.state)
-        # _, last_val_batteries = networks_batteries(last_obs_batteries)
-        last_val_batteries = traj_batch.values_batteries[-1]
+        _, last_val_batteries = networks_batteries(last_obs_batteries)
         last_val_rec = traj_batch.value_rec[-1]
 
         def _calculate_gae(traj_batch, last_val_batteries, last_val_rec):
@@ -496,8 +474,6 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
 
             return advantages, (advantages_batteries + traj_batch.values_batteries, advantages_rec + traj_batch.value_rec)
 
-        # print(f'roba {jax.tree.map(lambda x: x.shape, (traj_batch, last_val_batteries, last_val_rec))}')
-
         advantages, targets = _calculate_gae(traj_batch, last_val_batteries, last_val_rec)
 
         # UPDATE NETWORK
@@ -509,62 +485,13 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
                 advantages_batteries, advantages_rec = advantages
                 targets_batteries, targets_rec = targets
 
-                def _loss_fn_batteries(network, traj_batch_data, gae, targets):
+                def _loss_fn(network, traj_batch_data, gae, targets):
 
                     traj_batch_obs, traj_batch_actions, traj_batch_values, traj_batch_log_probs = traj_batch_data
 
                     # RERUN NETWORK
                     pi, value = network(traj_batch_obs)
-                    log_prob = pi.log_prob(traj_batch_actions)
-                    # print(log_prob.shape)
-
-                    # CALCULATE VALUE LOSS
-                    value_pred_clipped = traj_batch_values + (
-                        value - traj_batch_values
-                    ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
-                    value_losses = jnp.square(value - targets)
-                    value_losses_clipped = jnp.square(value_pred_clipped - targets)
-                    value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean(axis=1)
-                    value_loss = value_loss.mean(axis=np.arange(1, value_loss.ndim))
-
-                    assert value_loss.shape == (env.num_battery_agents,)
-
-                    # CALCULATE ACTOR LOSS
-                    ratio = jnp.exp(log_prob - traj_batch_log_probs)
-                    gae = jax.lax.cond(config["NORMALIZE_ADVANTAGES"],
-                                       lambda : (gae - gae.mean()) / (gae.std() + 1e-8),
-                                       lambda : gae)
-                    loss_actor1 = ratio * gae
-                    loss_actor2 = (
-                        jnp.clip(
-                            ratio,
-                            1.0 - config["CLIP_EPS"],
-                            1.0 + config["CLIP_EPS"],
-                        )
-                        * gae
-                    )
-                    loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
-                    loss_actor = loss_actor.mean(axis=np.arange(1, loss_actor.ndim))
-                    entropy = pi.entropy()
-                    entropy = entropy.mean(axis=np.arange(1, entropy.ndim))
-
-                    total_loss = (
-                        loss_actor
-                        + config["VF_COEF"] * value_loss
-                        - config["ENT_COEF"] * entropy
-                    )
-
-                    assert total_loss.ndim == 1
-
-                    total_loss = total_loss.sum()   # the loss will be linearly dependent on the loss of the single batteries, with derivative = 1
-                    return total_loss, (value_loss, loss_actor, entropy)
-
-                def _loss_fn_rec(network, traj_batch_data, gae, targets):
-
-                    traj_batch_obs, traj_batch_actions, traj_batch_values, traj_batch_log_probs = traj_batch_data
-
-                    # RERUN NETWORK
-                    pi, value = network(traj_batch_obs)
+                    # print('davfvd')
                     log_prob = pi.log_prob(traj_batch_actions)
                     # print(log_prob.shape)
 
@@ -601,7 +528,7 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
                         + config["VF_COEF"] * value_loss
                         - config["ENT_COEF"] * entropy
                     )
-                    return total_loss, (value_loss, loss_actor, entropy)
+                    return total_loss, (value_loss, loss_actor, entropy)        #fixme in realtà ogni agente ha la sua loss, ma così non dovrebbe cambiare
 
                 networks_batteries, optimizer_batteries, network_rec, optimizer_rec = nnx.merge(train_state.graph_def, train_state.state)
 
@@ -612,8 +539,8 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
                 # print('traj_data_batteries_for_loss')
                 # print(jax.tree_map(lambda x: x.shape, traj_data_batteries_for_loss))
 
-                grad_fn_batteries = nnx.value_and_grad(_loss_fn_batteries, has_aux=True)
-                total_loss_batteries, grads_batteries = grad_fn_batteries(
+                grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
+                total_loss_batteries, grads_batteries = grad_fn(
                     networks_batteries,
                     traj_data_batteries_for_loss,
                     advantages_batteries.swapaxes(0, 1),
@@ -621,19 +548,15 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
                 )
                 # print('tot loss batteites')
                 # print(jax.tree_map(lambda x: x.shape, total_loss_batteries))
-                jax.debug.print('bat {x}', x=total_loss_batteries[0])
 
                 traj_data_rec_for_loss = (traj_batch.obs_rec, traj_batch.actions_rec, traj_batch.value_rec, traj_batch.log_prob_rec)
 
-                grad_fn_rec = nnx.value_and_grad(_loss_fn_rec, has_aux=True)
-                total_loss_rec, grads_rec = grad_fn_rec(
+                total_loss_rec, grads_rec = grad_fn(
                     network_rec,
                     traj_data_rec_for_loss,
                     advantages_rec,
                     targets_rec
                 )
-                # total_loss_rec = 1.
-                jax.debug.print('rec {x}', x=total_loss_rec[0])
 
                 optimizer_batteries.update(grads_batteries)
                 # print('qui ci arrivo')
@@ -648,7 +571,7 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
             rng, _rng = jax.random.split(rng)
             batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
             assert (
-                batch_size == config["NUM_STEPS"] * config["NUM_ENVS"]
+                batch_size == config["NUM_STEPS"]# * config["NUM_ENVS"]
             ), "batch size must be equal to number of steps * number of envs"
             permutation = jax.random.permutation(_rng, batch_size)
             batch = (traj_batch, advantages, targets)
@@ -657,9 +580,9 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
 
             # jax.debug.print('bef {z}', z=jax.tree.map(lambda l: l.shape, traj_batch), ordered=True)
 
-            batch = jax.tree_util.tree_map(
-                lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
-            )
+            # batch = jax.tree_util.tree_map(
+            #     lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
+            # )
             # jax.debug.print('aft {z}', z=jax.tree.map(lambda l: l.shape, batch[0]), ordered=True)
             shuffled_batch = jax.tree_util.tree_map(
                 lambda x: jnp.take(x, permutation, axis=0), batch
@@ -719,8 +642,8 @@ def train(env: RECEnv, config, train_state, rng, validate=True, freq_val=None, v
         return runner_state_plus, metric
 
     rng, _rng = jax.random.split(rng)
-    obsv_batteries = jnp.stack([obsv[a] for a in env.battery_agents], axis=1)
-
+    obsv_batteries = jnp.vstack([obsv[a] for a in env.battery_agents])
+    # print(obsv_batteries.shape)
     runner_state = (train_state, env_state, obsv_batteries, _rng)
 
     runner_state_plus = (runner_state, val_info)

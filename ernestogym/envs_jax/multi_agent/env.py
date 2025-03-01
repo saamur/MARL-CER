@@ -1,6 +1,6 @@
 import chex
 from flax import struct
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from collections import OrderedDict
 
 import numpy as np
@@ -288,10 +288,10 @@ class RECEnv(MultiAgentEnv):
 
         self._obs_rec_idx = {key: i for i, key in enumerate(self._obs_rec_keys)}
 
-        i_max_action = self.BESS.get_feasible_current(battery_states, battery_states.soc_state.soc_min, dt=self.env_step)[0]
-        i_min_action = self.BESS.get_feasible_current(battery_states, battery_states.soc_state.soc_max, dt=self.env_step)[1]
+        self.i_max_action = self.BESS.get_feasible_current(battery_states, battery_states.soc_state.soc_min, dt=self.env_step)[0]
+        self.i_min_action = self.BESS.get_feasible_current(battery_states, battery_states.soc_state.soc_max, dt=self.env_step)[1]
 
-        self.action_spaces = {a: spaces.Box(i_min_action[i], i_max_action[i], shape=(1,)) for i, a in enumerate(self.battery_agents)}
+        self.action_spaces = {a: spaces.Box(self.i_min_action[i], self.i_max_action[i], shape=(1,)) for i, a in enumerate(self.battery_agents)}
         self.action_spaces[self.rec_agent] = spaces.Box(0., 1., shape=(self.num_battery_agents,))
 
         self.init_state = EnvState(battery_states=battery_states,
@@ -441,22 +441,63 @@ class RECEnv(MultiAgentEnv):
 
         return jax.lax.cond(state.is_rec_turn, rec_turn, batteries_turn)
 
-    def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], EnvState]:
+    def reset(self, key: chex.PRNGKey, profile_index=-1) -> Tuple[Dict[str, chex.Array], EnvState]:
         state = self.init_state
         key, key_ = jax.random.split(key)
-        profiles_indices = jax.random.choice(key_, self.dem_matrices_battery_houses.shape[1], shape=(self.num_battery_agents,))
+        profiles_indices = jax.lax.cond(profile_index == -1,
+                                        lambda : jax.random.choice(key_, self.dem_matrices_battery_houses.shape[1], shape=(self.num_battery_agents,)),
+                                        lambda : jnp.full(shape=(self.num_battery_agents,), fill_value=profile_index%self.dem_matrices_battery_houses.shape[1]))
+
         demands = jax.vmap(Demand.build_demand_data, in_axes=(0, None))(self.dem_matrices_battery_houses[jnp.arange(self.num_battery_agents), profiles_indices],
                                                                         self.env_step)
         state = state.replace(demands_battery_houses=demands)
 
         if self.num_passive_houses > 0:
-            profiles_indices = jax.random.choice(key_, self.dem_matrices_passive_houses.shape[1],
-                                                 shape=(self.num_passive_houses,))
+            key, key_ = jax.random.split(key)
+            profiles_indices = jax.lax.cond(profile_index == -1,
+                                            lambda: jax.random.choice(key_, self.dem_matrices_passive_houses.shape[1],
+                                                                      shape=(self.num_passive_houses,)),
+                                            lambda: jnp.full(shape=(self.num_passive_houses,),
+                                                             fill_value=profile_index %
+                                                                        self.dem_matrices_passive_houses.shape[1]))
+
             demands = jax.vmap(Demand.build_demand_data, in_axes=(0, None))(self.dem_matrices_passive_houses[jnp.arange(self.num_battery_agents), profiles_indices],
                                                                             self.env_step)
             state.replace(demands_passive_houses=demands)
 
         return self.get_obs(state), state
+
+    # @partial(jax.jit, static_argnums=(0,))
+    # def step(
+    #         self,
+    #         key: chex.PRNGKey,
+    #         state: EnvState,
+    #         actions: Dict[str, chex.Array],
+    #         reset_state: Optional[State] = None,
+    # ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
+    #     """Performs step transitions in the environment. Resets the environment if done.
+    #     To control the reset state, pass `reset_state`. Otherwise, the environment will reset randomly."""
+    #
+    #     is_rec_turn = state.is_rec_turn
+    #
+    #     key, key_reset = jax.random.split(key)
+    #     obs_st, states_st, rewards, dones, infos = self.step_env(key, state, actions)
+    #
+    #     if reset_state is None:
+    #         obs_re, states_re = self.reset(key_reset)
+    #     else:
+    #         states_re = reset_state
+    #         obs_re = self.get_obs(states_re)
+    #
+    #     # Auto-reset environment based on termination
+    #     restart = jnp.logical_and(is_rec_turn, dones["__any__"])
+    #     states = jax.tree.map(
+    #         lambda x, y: jax.lax.select(restart, x, y), states_re, states_st
+    #     )
+    #     obs = jax.tree.map(
+    #         lambda x, y: jax.lax.select(restart, x, y), obs_re, obs_st
+    #     )
+    #     return obs, states, rewards, dones, infos
 
     def step_env(self, key: chex.PRNGKey, state: EnvState, actions: Dict[str, chex.Array]) -> Tuple[Dict[str, chex.Array], EnvState, Dict[str, float], Dict[str, bool], Dict]:
         return jax.lax.cond(state.is_rec_turn,
@@ -523,7 +564,11 @@ class RECEnv(MultiAgentEnv):
                 'r_glob': r_glob,
                 'self_consumption': self_consumption,
                 'tot_incentives': tot_incentives,
-                'rec_reward': rec_reward}
+                'rec_reward': rec_reward,
+                'generations': jnp.zeros(self.num_battery_agents),
+                'demands': jnp.zeros(self.num_battery_agents),
+                'buy_prices': jnp.zeros(self.num_battery_agents),
+                'sell_prices': jnp.zeros(self.num_battery_agents)}
 
         return self.get_obs(new_state), new_state, rewards, dones, info
 
@@ -582,14 +627,14 @@ class RECEnv(MultiAgentEnv):
 
         new_iteration = state.iter + 1
 
-        terminated = new_battery_states.soh <= self._termination['min_soh']
+        # terminated = new_battery_states.soh <= self._termination['min_soh']
 
-        truncated = jnp.logical_or(new_iteration >= self._termination['max_iterations'],
-                                   jnp.logical_or(jnp.logical_or(jax.vmap(Demand.is_run_out_of_data, in_axes=(0, None))(state.demands_battery_houses, new_timeframe),
-                                                                 jax.vmap(Generation.is_run_out_of_data, in_axes=(0, None))(self.generations_battery_houses, new_timeframe)),
-                                                  jnp.logical_or(jax.vmap(BuyingPrice.is_run_out_of_data, in_axes=(0, None))(self.buying_prices_battery_houses, new_timeframe),
-                                                                 jax.vmap(SellingPrice.is_run_out_of_data, in_axes=(0, None))(self.selling_prices_battery_houses, new_timeframe))),
-                                   )
+        # truncated = jnp.logical_or(new_iteration >= self._termination['max_iterations'],
+        #                            jnp.logical_or(jnp.logical_or(jax.vmap(Demand.is_run_out_of_data, in_axes=(0, None))(state.demands_battery_houses, new_timeframe),
+        #                                                          jax.vmap(Generation.is_run_out_of_data, in_axes=(0, None))(self.generations_battery_houses, new_timeframe)),
+        #                                           jnp.logical_or(jax.vmap(BuyingPrice.is_run_out_of_data, in_axes=(0, None))(self.buying_prices_battery_houses, new_timeframe),
+        #                                                          jax.vmap(SellingPrice.is_run_out_of_data, in_axes=(0, None))(self.selling_prices_battery_houses, new_timeframe))),
+        #                            )
 
         new_state = state.replace(battery_states=new_battery_states,
                                   iter=new_iteration,
@@ -617,13 +662,20 @@ class RECEnv(MultiAgentEnv):
                 'r_glob': jnp.zeros(self.num_battery_agents),
                 'self_consumption': 0.,
                 'tot_incentives': 0.,
-                'rec_reward': 0.}
+                'rec_reward': 0.,
+                'generations': generations,
+                'demands': demands,
+                'buy_prices': buying_prices,
+                'sell_prices': selling_prices}
 
-        dones_array = jnp.logical_or(truncated, terminated)
+        # dones_array = jnp.logical_or(truncated, terminated)
 
-        dones = {a: dones_array[i] for i, a in enumerate(self.battery_agents)}
+        # dones = {a: dones_array[i] for i, a in enumerate(self.battery_agents)}
+        # dones[self.rec_agent] = False
+        # dones['__all__'] = jnp.all(dones_array)
+        dones = {a: False for i, a in enumerate(self.battery_agents)}
         dones[self.rec_agent] = False
-        dones['__all__'] = jnp.all(dones_array)
+        dones['__all__'] = False
 
         return self.get_obs(new_state), new_state, rewards, dones, info
 
