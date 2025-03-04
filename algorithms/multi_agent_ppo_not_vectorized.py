@@ -241,9 +241,9 @@ def make_train(config, env):
 
 
     _rng = nnx.Rngs(123)
-    network_batteries = utils.construct_battery_net_from_config_multi_agent(config, _rng)
+    network_batteries = utils.construct_battery_net_from_config_multi_agent_only_actor_critic(config, _rng)
     _rng = nnx.Rngs(222)
-    network_rec = utils.construct_rec_net_from_config_multi_agent(config, _rng)
+    network_rec = utils.construct_rec_net_from_config_multi_agent_only_actor_critic(config, _rng)
 
     if config["ANNEAL_LR"]:
         tx = optax.chain(

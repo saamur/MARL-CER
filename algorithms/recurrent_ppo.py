@@ -16,6 +16,8 @@ import distrax
 import algorithms.utils as utils
 from ernestogym.envs_jax.single_agent.env import  MicroGridEnv
 
+import algorithms.recurrent_custom as recurrent_custom
+
 from .wrappers import (
     LogWrapper,
     VecEnv,
@@ -64,13 +66,13 @@ class RecurrentActorCritic(nnx.Module):
 
         self.lstm_act_layers = []
         for i in range(len(lstm_act_net_arch) - 1):
-            self.lstm_act_layers.append(nnx.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+            self.lstm_act_layers.append(recurrent_custom.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
 
         lstm_cri_net_arch = [num_sequences] + list(lstm_cri_net_arch)
 
         self.lstm_cri_layers = []
         for i in range(len(lstm_cri_net_arch) - 1):
-            self.lstm_cri_layers.append(nnx.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+            self.lstm_cri_layers.append(recurrent_custom.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
 
         num_non_sequences = in_features - num_sequences
 
