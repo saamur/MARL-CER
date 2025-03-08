@@ -365,8 +365,8 @@ class RECEnv(MultiAgentEnv):
             self.obs_is_local_rec['network_REC_diff'] = False
 
         if 'rec_actions_prev_step' in settings['rec_obs']:
-            self._obs_rec_keys.append('actions_pre_step')
-            rec_obs_space['actions_pre_step'] = spaces.Box(low=0., high=1., shape=(self.num_battery_agents,))
+            self._obs_rec_keys.append('rec_actions_prev_step')
+            rec_obs_space['rec_actions_prev_step'] = spaces.Box(low=0., high=1., shape=(self.num_battery_agents,))
             self.obs_is_sequence_rec['rec_actions_prev_step'] = True
             self.obs_is_local_rec['rec_actions_prev_step'] = True
 
