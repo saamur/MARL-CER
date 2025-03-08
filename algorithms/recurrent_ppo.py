@@ -31,7 +31,7 @@ class RecurrentActorCritic(nnx.Module):
                  num_sequences: int,
                  lstm_net_arch: Sequence[int]=None, lstm_act_net_arch: Sequence[int]=None, lstm_cri_net_arch: Sequence[int]=None, lstm_activation: str=None,
                  net_arch: Sequence[int]=None, act_net_arch: Sequence[int]=None, cri_net_arch: Sequence[int]=None,
-                 add_logistic_to_actor: bool = False,
+                 add_logistic_to_actor: bool = False, normalize:bool=False
                  ):
 
         if act_net_arch is None:
@@ -52,6 +52,10 @@ class RecurrentActorCritic(nnx.Module):
                 raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
             lstm_cri_net_arch = lstm_net_arch
 
+        self.normalize = normalize
+        if self.normalize:
+            self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
+
         activation = self.activation_from_name(activation)
 
         if lstm_activation is None:
@@ -66,13 +70,13 @@ class RecurrentActorCritic(nnx.Module):
 
         self.lstm_act_layers = []
         for i in range(len(lstm_act_net_arch) - 1):
-            self.lstm_act_layers.append(recurrent_custom.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+            self.lstm_act_layers.append(nnx.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
 
         lstm_cri_net_arch = [num_sequences] + list(lstm_cri_net_arch)
 
         self.lstm_cri_layers = []
         for i in range(len(lstm_cri_net_arch) - 1):
-            self.lstm_cri_layers.append(recurrent_custom.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+            self.lstm_cri_layers.append(nnx.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
 
         num_non_sequences = in_features - num_sequences
 
@@ -101,6 +105,8 @@ class RecurrentActorCritic(nnx.Module):
 
     def __call__(self, x, lstm_act_state, lstm_cri_state):
 
+        x = self.normalize_input(x)
+
         lstm_act_state, act_output = self.apply_lstm_act(x, lstm_act_state)
         pi = self.apply_act_mlp(x, act_output)
 
@@ -108,6 +114,12 @@ class RecurrentActorCritic(nnx.Module):
         critic = self.apply_cri_mlp(x, cri_output)
 
         return pi, critic, lstm_act_state, lstm_cri_state
+
+    def normalize_input(self, x):
+        if self.normalize:
+            return self.norm_layer(x)
+        else:
+            return x
 
     def apply_lstm_act(self, x, lstm_act_prev_state):
         seq = jax.lax.slice_in_dim(x, 0, self.num_sequences, axis=-1)

@@ -25,7 +25,7 @@ from .wrappers import (
 )
 
 class ActorCritic(nnx.Module):
-    def __init__(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, add_logistic_to_actor: bool = False):
+    def __init__(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, add_logistic_to_actor: bool = False, normalize: bool = False):
 
         if act_net_arch is None:
             if net_arch is None:
@@ -39,7 +39,12 @@ class ActorCritic(nnx.Module):
         act_net_arch = list(act_net_arch)
         cri_net_arch = list(cri_net_arch)
 
-        activation = self.activation_from_name(activation)
+        self.normalize = normalize
+        if normalize:
+            print('norm batt')
+            self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
+
+        activation = utils.activation_from_name(activation)
 
         act_net_arch = [in_features] + act_net_arch + [out_features]
 
@@ -73,6 +78,9 @@ class ActorCritic(nnx.Module):
 
     def __call__(self, x):
 
+        if self.normalize:
+            x = self.norm_layer(x)
+
         actor_mean = x
         for layer in self.act_layers:
             actor_mean = layer(actor_mean)
@@ -84,24 +92,6 @@ class ActorCritic(nnx.Module):
             critic = layer(critic)
 
         return pi, jnp.squeeze(critic, axis=-1)
-
-    @classmethod
-    def activation_from_name(cls, name: str):
-        name = name.lower()
-        if name == 'relu':
-            return nnx.relu
-        elif name == 'tanh':
-            return nnx.tanh
-        elif name == 'sigmoid':
-            return nnx.sigmoid
-        elif name == 'leaky_relu':
-            return nnx.leaky_relu
-        elif name == 'swish':
-            return nnx.swish
-        elif name == 'elu':
-            return nnx.elu
-        else:
-            raise ValueError("'activation' must be 'relu' or 'tanh'")
 
 
 class Transition(NamedTuple):

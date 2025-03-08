@@ -9,7 +9,7 @@ import pickle
 import lzma
 
 import algorithms.ppo as ppo
-import algorithms.recurrent_ppo as recurrent_ppo
+import algorithms.recurrent_ppo_wo_normalization as recurrent_ppo
 import algorithms.multi_agent_ppo_only_actor_critic as multi_agent_ppo_only_actor_critic
 import algorithms.multi_agent_ppo as multi_agent_ppo
 
@@ -82,37 +82,38 @@ def construct_battery_net_from_config_multi_agent_only_actor_critic(config, rng)
 
 def construct_battery_net_from_config_multi_agent(config, rng):
 
-    @nnx.split_rngs(splits=config['NUM_BATTERY_AGENTS'])
-    def thing(rng):
-        if config['NETWORK_TYPE_BATTERIES'] == 'actor_critic':
-            return multi_agent_ppo.StackedActorCritic(
-                config["BATTERY_OBSERVATION_SPACE_SIZE"],
-                config["BATTERY_ACTION_SPACE_SIZE"],
-                activation=config["ACTIVATION"],
-                net_arch=config.get("NET_ARCH"),
-                act_net_arch=config.get("ACT_NET_ARCH"),
-                cri_net_arch=config.get("CRI_NET_ARCH"),
-                add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
-                rngs=rng)
-        elif config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
-            return multi_agent_ppo.StackedRecurrentActorCritic(
-                config["BATTERY_OBSERVATION_SPACE_SIZE"],
-                config["BATTERY_ACTION_SPACE_SIZE"],
-                num_sequences=config["BATTERY_NUM_SEQUENCES"],
-                activation=config["ACTIVATION"],
-                lstm_activation=config["LSTM_ACTIVATION"],
-                net_arch=config.get("NET_ARCH"),
-                act_net_arch=config.get("ACT_NET_ARCH"),
-                cri_net_arch=config.get("CRI_NET_ARCH"),
-                lstm_net_arch=config.get("LSTM_NET_ARCH"),
-                lstm_act_net_arch=config.get("LSTM_ACT_NET_ARCH"),
-                lstm_cri_net_arch=config.get("LSTM_CRI_NET_ARCH"),
-                add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
-                rngs=rng
-        )
-        else:
-            raise ValueError('Invalid network name')
-    return thing(rng)
+    if config['NETWORK_TYPE_BATTERIES'] == 'actor_critic':
+        return multi_agent_ppo.StackedActorCritic(
+            config['NUM_BATTERY_AGENTS'],
+            config["BATTERY_OBSERVATION_SPACE_SIZE"],
+            config["BATTERY_ACTION_SPACE_SIZE"],
+            activation=config["ACTIVATION"],
+            net_arch=config.get("NET_ARCH"),
+            act_net_arch=config.get("ACT_NET_ARCH"),
+            cri_net_arch=config.get("CRI_NET_ARCH"),
+            add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
+            normalize=config["NORMALIZE_NN_INPUTS"],
+            rngs=rng)
+    elif config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
+        return multi_agent_ppo.StackedRecurrentActorCritic(
+            config['NUM_BATTERY_AGENTS'],
+            config["BATTERY_OBSERVATION_SPACE_SIZE"],
+            config["BATTERY_ACTION_SPACE_SIZE"],
+            num_sequences=config["BATTERY_NUM_SEQUENCES"],
+            activation=config["ACTIVATION"],
+            lstm_activation=config["LSTM_ACTIVATION"],
+            net_arch=config.get("NET_ARCH"),
+            act_net_arch=config.get("ACT_NET_ARCH"),
+            cri_net_arch=config.get("CRI_NET_ARCH"),
+            lstm_net_arch=config.get("LSTM_NET_ARCH"),
+            lstm_act_net_arch=config.get("LSTM_ACT_NET_ARCH"),
+            lstm_cri_net_arch=config.get("LSTM_CRI_NET_ARCH"),
+            add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
+            normalize=config["NORMALIZE_NN_INPUTS"],
+            rngs=rng
+    )
+    else:
+        raise ValueError('Invalid network name')
 
 def construct_rec_net_from_config_multi_agent_only_actor_critic(config, rng):
     return multi_agent_ppo_only_actor_critic.RECActorCritic(config["REC_INPUT_NETWORK_SIZE"],
@@ -126,19 +127,22 @@ def construct_rec_net_from_config_multi_agent_only_actor_critic(config, rng):
 
 def construct_rec_net_from_config_multi_agent(config, rng):
     if config['NETWORK_TYPE_REC'] == 'actor_critic':
-        return multi_agent_ppo.RECActorCritic(config["REC_INPUT_NETWORK_SIZE"],
+        return multi_agent_ppo.RECActorCritic(config['REC_OBS_KEYS'],
+                                              config['REC_OBS_IS_LOCAL'],
                                               config['NUM_BATTERY_AGENTS'],
                                               config['ACTIVATION'],
                                               rngs=rng,
                                               net_arch=config.get("NET_ARCH"),
                                               act_net_arch=config.get("ACT_NET_ARCH"),
                                               cri_net_arch=config.get("CRI_NET_ARCH"),
-                                              passive_houses=config['PASSIVE_HOUSES'])
+                                              passive_houses=config['PASSIVE_HOUSES'],
+                                              normalize=config["NORMALIZE_NN_INPUTS"])
     elif config['NETWORK_TYPE_REC'] == 'recurrent_actor_critic':
-        return multi_agent_ppo.RECRecurrentActorCritic(config["REC_INPUT_NETWORK_SIZE"],
+        return multi_agent_ppo.RECRecurrentActorCritic(config['REC_OBS_KEYS'],
+                                                       config['REC_OBS_IS_LOCAL'],
+                                                       config['REC_OBS_IS_SEQUENCE'],
                                                        config['NUM_BATTERY_AGENTS'],
                                                        config['ACTIVATION'],
-                                                       num_sequences=config["REC_NUM_SEQUENCES"],
                                                        rngs=rng,
                                                        net_arch=config.get("NET_ARCH"),
                                                        act_net_arch=config.get("ACT_NET_ARCH"),
@@ -146,7 +150,9 @@ def construct_rec_net_from_config_multi_agent(config, rng):
                                                        lstm_net_arch=config.get("LSTM_NET_ARCH"),
                                                        lstm_act_net_arch=config.get("LSTM_ACT_NET_ARCH"),
                                                        lstm_cri_net_arch=config.get("LSTM_CRI_NET_ARCH"),
-                                                       passive_houses=config['PASSIVE_HOUSES'])
+                                                       lstm_activation=config["LSTM_ACTIVATION"],
+                                                       passive_houses=config['PASSIVE_HOUSES'],
+                                                       normalize=config["NORMALIZE_NN_INPUTS"])
     else:
         raise ValueError('Invalid network name')
 
@@ -209,7 +215,7 @@ def restore_state(path):
 
     return network, config, params, val_info
 
-def save_state_multiagent(networks_batteries, network_rec, config, params: dict, val_info:dict=None, env_type='normal', additional_info=''):
+def save_state_multiagent(networks_batteries, network_rec, config, params: dict, train_info:dict=None, val_info:dict=None, env_type='normal', additional_info=''):
     dir_name = (datetime.now().strftime("%Y%m%d_%H%M%S") +
                 '_bat_net_type_' + str(config['NETWORK_TYPE_BATTERIES']) +
                 '_rec_net_type_' + str(config['NETWORK_TYPE_REC']) +
@@ -250,6 +256,9 @@ def save_state_multiagent(networks_batteries, network_rec, config, params: dict,
     with lzma.open(path_base + dir_name + '/params.xz', 'wb') as file:
         pickle.dump(params, file)
 
+    with lzma.open(path_base + dir_name + '/train_info.xz', 'wb') as file:
+        pickle.dump(train_info, file)
+
     with lzma.open(path_base + dir_name + '/val_info.xz', 'wb') as file:
         pickle.dump(val_info, file)
 
@@ -260,6 +269,9 @@ def restore_state_multi_agent(path):
         config = pickle.load(file)
 
     config = unfreeze(config)
+
+    if 'NORMALIZE_NN_INPUTS' not in config.keys():
+        config['NORMALIZE_NN_INPUTS'] = False
 
     if 'NETWORK_TYPE_BATTERIES' not in config.keys():
         config['NETWORK_TYPE_BATTERIES'] = 'actor_critic'
@@ -285,7 +297,13 @@ def restore_state_multi_agent(path):
 
     network_rec = nnx.merge(graphdef_rec, state_rec_restored)
 
+    if os.path.isfile(path + '/train_info.xz'):
+        with lzma.open(path + '/train_info.xz', 'rb') as file:
+            train_info = pickle.load(file)
+    else:
+        train_info = None
+
     with lzma.open(path + '/val_info.xz', 'rb') as file:
         val_info = pickle.load(file)
 
-    return network_batteries, network_rec, config, params, val_info
+    return network_batteries, network_rec, config, params, train_info, val_info

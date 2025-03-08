@@ -31,6 +31,8 @@ class EnvState(State):
     demands_battery_houses: DemandData
     demands_passive_houses: DemandData
 
+    prev_actions_rec: jnp.array
+
     iter: int
     timeframe: int
     is_rec_turn: bool
@@ -166,6 +168,7 @@ class RECEnv(MultiAgentEnv):
         self.incentivizing_tariff_coeff = settings['incentivizing_tariff_coeff']
         self.incentivizing_tariff_max_variable = settings['incentivizing_tariff_max_variable']
         self.incentivizing_tariff_baseline_variable = settings['incentivizing_tariff_baseline_variable']
+        self.fairness_coeff = settings['fairness_coeff']
 
         self._termination = settings['termination']
         if self._termination['max_iterations'] is None:
@@ -236,14 +239,17 @@ class RECEnv(MultiAgentEnv):
         if 'network_REC_plus' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_plus')
             self.battery_obs_space['network_REC_plus'] = {'low': 0, 'high': jnp.inf}
+            obs_is_sequence.append(True)
 
         if 'network_REC_minus' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_minus')
             self.battery_obs_space['network_REC_minus'] = {'low': 0, 'high': jnp.inf}
+            obs_is_sequence.append(True)
 
         if 'network_REC_diff' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_diff')
             self.battery_obs_space['network_REC_diff'] = {'low': -jnp.inf, 'high': jnp.inf}
+            obs_is_sequence.append(True)
 
         indices = np.argsort(np.logical_not(obs_is_sequence))
 
@@ -260,16 +266,68 @@ class RECEnv(MultiAgentEnv):
 
 
 
-        self._obs_rec_keys = ['demands_base_battery_houses', 'demands_battery_battery_houses', 'generations_base_battery_houses']
+
+
+        self._obs_rec_keys = ['demands_base_battery_houses', 'demands_battery_battery_houses', 'generations_battery_houses']
+        self.obs_is_sequence_rec = {'demands_base_battery_houses':True,
+                                    'demands_battery_battery_houses':True,
+                                    'generations_battery_houses':True}
+
+        self.obs_is_local_rec = {'demands_base_battery_houses':True,
+                                 'demands_battery_battery_houses':True,
+                                 'generations_battery_houses':True}
 
         rec_obs_space = {'demands_base_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,)),
                          'demands_battery_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,)),
-                         'generations_base_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))}
+                         'generations_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))}
 
         if self.num_passive_houses > 0:
-            rec_obs_space['demands_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
-            rec_obs_space['generations_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
-            self._obs_rec_keys += ['demands_passive_houses', 'generations_passive_houses']
+            if 'demands_passive_houses' in settings['rec_obs']:
+                self._obs_rec_keys.append('demands_passive_houses')
+                rec_obs_space['demands_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
+                self.obs_is_sequence_rec['demands_passive_houses'] = True
+                self.obs_is_local_rec['demands_passive_houses'] = True
+            if 'generations_passive_houses' in settings['rec_obs']:
+                self._obs_rec_keys.append('generations_passive_houses')
+                rec_obs_space['generations_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
+                self.obs_is_sequence_rec['generations_passive_houses'] = True
+                self.obs_is_local_rec['generations_passive_houses'] = True
+
+        if 'tot_demands_base' in settings['rec_obs']:
+            self._obs_rec_keys.append('tot_demands_base')
+            rec_obs_space['tot_demands_base'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+            self.obs_is_sequence_rec['tot_demands_base'] = True
+            self.obs_is_local_rec['tot_demands_base'] = False
+
+        if 'tot_demands_batteries' in settings['rec_obs']:
+            self._obs_rec_keys.append('tot_demands_batteries')
+            rec_obs_space['tot_demands_batteries'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+            self.obs_is_sequence_rec['tot_demands_batteries'] = True
+            self.obs_is_local_rec['tot_demands_batteries'] = False
+
+        if 'tot_generations' in settings['rec_obs']:
+            self._obs_rec_keys.append('tot_generations')
+            rec_obs_space['tot_generations'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+            self.obs_is_sequence_rec['tot_generations'] = True
+            self.obs_is_local_rec['tot_generations'] = False
+
+        if 'mean_demands_base' in settings['rec_obs']:
+            self._obs_rec_keys.append('mean_demands_base')
+            rec_obs_space['mean_demands_base'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+            self.obs_is_sequence_rec['mean_demands_base'] = True
+            self.obs_is_local_rec['mean_demands_base'] = False
+
+        if 'mean_demands_batteries' in settings['rec_obs']:
+            self._obs_rec_keys.append('mean_demands_batteries')
+            rec_obs_space['mean_demands_batteries'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+            self.obs_is_sequence_rec['mean_demands_batteries'] = True
+            self.obs_is_local_rec['mean_demands_batteries'] = False
+
+        if 'mean_generations' in settings['rec_obs']:
+            self._obs_rec_keys.append('mean_generations')
+            rec_obs_space['mean_generations'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
+            self.obs_is_sequence_rec['mean_generations'] = True
+            self.obs_is_local_rec['mean_generations'] = False
 
         if 'day_of_year' in settings['rec_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
@@ -277,16 +335,45 @@ class RECEnv(MultiAgentEnv):
             self._obs_rec_keys.append('cos_day_of_year')
             rec_obs_space['sin_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
             rec_obs_space['cos_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
+            self.obs_is_sequence_rec.update({'sin_day_of_year': False, 'cos_day_of_year': False})
+            self.obs_is_local_rec.update({'sin_day_of_year': False, 'cos_day_of_year': False})
         if 'seconds_of_day' in settings['rec_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             self._obs_rec_keys.append('sin_seconds_of_day')
             self._obs_rec_keys.append('cos_seconds_of_day')
             rec_obs_space['sin_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
             rec_obs_space['cos_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
+            self.obs_is_sequence_rec.update({'sin_seconds_of_day': False, 'cos_seconds_of_day': False})
+            self.obs_is_local_rec.update({'sin_seconds_of_day': False, 'cos_seconds_of_day': False})
+
+        if 'network_REC_plus' in settings['rec_obs']:
+            self._obs_rec_keys.append('network_REC_plus')
+            rec_obs_space['network_REC_plus'] = {'low': 0, 'high': jnp.inf}
+            self.obs_is_sequence_rec['network_REC_plus'] = True
+            self.obs_is_local_rec['network_REC_plus'] = False
+
+        if 'network_REC_minus' in settings['rec_obs']:
+            self._obs_rec_keys.append('network_REC_minus')
+            rec_obs_space['network_REC_minus'] = {'low': 0, 'high': jnp.inf}
+            self.obs_is_sequence_rec['network_REC_minus'] = True
+            self.obs_is_local_rec['network_REC_minus'] = False
+
+        if 'network_REC_diff' in settings['rec_obs']:
+            self._obs_rec_keys.append('network_REC_diff')
+            rec_obs_space['network_REC_diff'] = {'low': -jnp.inf, 'high': jnp.inf}
+            self.obs_is_sequence_rec['network_REC_diff'] = True
+            self.obs_is_local_rec['network_REC_diff'] = False
+
+        if 'rec_actions_prev_step' in settings['rec_obs']:
+            self._obs_rec_keys.append('actions_pre_step')
+            rec_obs_space['actions_pre_step'] = spaces.Box(low=0., high=1., shape=(self.num_battery_agents,))
+            self.obs_is_sequence_rec['rec_actions_prev_step'] = True
+            self.obs_is_local_rec['rec_actions_prev_step'] = True
+
+        # self._obs_rec_keys = tuple(self._obs_rec_keys)
 
         self.observation_spaces[self.rec_agent] = spaces.Dict(rec_obs_space)
 
-        self._obs_rec_idx = {key: i for i, key in enumerate(self._obs_rec_keys)}
 
         self.i_max_action = self.BESS.get_feasible_current(battery_states, battery_states.soc_state.soc_min, dt=self.env_step)[0]
         self.i_min_action = self.BESS.get_feasible_current(battery_states, battery_states.soc_state.soc_max, dt=self.env_step)[1]
@@ -301,7 +388,8 @@ class RECEnv(MultiAgentEnv):
                                    done=jnp.zeros(shape=(self.num_agents,), dtype=bool),
                                    step=-1,
                                    demands_battery_houses=demands_battery_houses,
-                                   demands_passive_houses=demands_passive_houses)
+                                   demands_passive_houses=demands_passive_houses,
+                                   prev_actions_rec=jnp.ones(self.num_battery_agents)/self.num_battery_agents)
 
     @partial(jax.vmap, in_axes=(None, 0, None))
     def _get_generations(self, gen_data, timestep):
@@ -402,13 +490,16 @@ class RECEnv(MultiAgentEnv):
                        'generations_battery_houses': jnp.zeros(self.num_battery_agents)}
 
             if self.num_passive_houses > 0:
-                rec_obs['demands_passive_houses'] = jnp.zeros(self.num_passive_houses)
-                rec_obs['generations_passive_houses'] = jnp.zeros(self.num_passive_houses)
+                if 'demands_passive_houses' in self._obs_rec_keys:
+                    rec_obs['demands_passive_houses'] = jnp.zeros(self.num_passive_houses)
+                if 'generations_passive_houses' in self._obs_rec_keys:
+                    rec_obs['generations_passive_houses'] = jnp.zeros(self.num_passive_houses)
 
-            for o in ['sin_seconds_of_day', 'cos_seconds_of_day', 'sin_day_of_year', 'cos_day_of_year']:
-                if o in self._obs_rec_keys:
-                    rec_obs[o] = 0.
+            if 'rec_actions_prev_step' in self._obs_rec_keys:
+                rec_obs['rec_actions_prev_step'] = jnp.zeros(self.num_battery_agents)
 
+            for o in [key for key in self._obs_rec_keys if not self.obs_is_local_rec[key]]:
+                rec_obs[o] = 0.
             obs[self.rec_agent] = rec_obs
 
             return obs
@@ -422,18 +513,58 @@ class RECEnv(MultiAgentEnv):
                        'demands_battery_battery_houses': state.battery_states.electrical_state.p,
                        'generations_battery_houses': generations_batteries}
 
-            if self.num_passive_houses > 0:
-                rec_obs['demand_passive_houses'] = self._get_demands(state.demands_passive_houses, state.timeframe)
-                rec_obs['generations_passive_houses'] = self._get_generations(self.generations_passive_houses, state.timeframe)
+            balance_plus, balance_minus = self._calc_balances(state)
 
-            if 'sin_seconds_of_day' in self._obs_rec_keys:
-                rec_obs['sin_seconds_of_day'] = jnp.sin(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)
-            if 'cos_seconds_of_day' in self._obs_rec_keys:
-                rec_obs['cos_seconds_of_day'] = jnp.cos(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)
-            if 'sin_day_of_year' in self._obs_rec_keys:
-                rec_obs['sin_day_of_year'] = jnp.sin(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe)
-            if 'cos_day_of_year' in self._obs_rec_keys:
-                rec_obs['cos_day_of_year'] = jnp.cos(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe)
+            for key in self._obs_rec_keys:
+                match key:
+                    case 'tot_demands_base':
+                        rec_obs['tot_demands_base'] = demands_batteries.sum()
+                    case 'tot_demands_batteries':
+                        rec_obs['tot_demands_batteries'] = state.battery_states.electrical_state.p.sum()
+                    case 'tot_generations':
+                        rec_obs['tot_generations'] = generations_batteries.sum()
+
+                    case 'mean_demands_base':
+                        rec_obs['mean_demands_base'] = demands_batteries.mean()
+                    case 'mean_demands_batteries':
+                        rec_obs['mean_demands_batteries'] = state.battery_states.electrical_state.p.mean()
+                    case 'mean_generations':
+                        rec_obs['mean_generations'] = generations_batteries.mean()
+
+                    case 'sin_seconds_of_day':
+                        rec_obs['sin_seconds_of_day'] = jnp.sin(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)
+                    case 'cos_seconds_of_day':
+                        rec_obs['cos_seconds_of_day'] = jnp.cos(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)
+                    case 'sin_day_of_year':
+                        rec_obs['sin_day_of_year'] = jnp.sin(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe)
+                    case 'cos_day_of_year':
+                        rec_obs['cos_day_of_year'] = jnp.cos(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe)
+
+                    case 'network_REC_plus':
+                        rec_obs['network_REC_plus'] = balance_plus
+                    case 'network_REC_minus':
+                        rec_obs['network_REC_minus'] = balance_minus
+                    case 'network_REC_diff':
+                        rec_obs['network_REC_diff'] = balance_plus - balance_minus
+
+                    case 'rec_actions_prev_step':
+                        rec_obs['rec_actions_prev_step'] = state.prev_actions_rec
+
+            if self.num_passive_houses > 0:
+                passive_demands = self._get_demands(state.demands_passive_houses, state.timeframe)
+                passive_generation = self._get_generations(self.generations_passive_houses, state.timeframe)
+                if 'demands_passive_houses' in self._obs_rec_keys:
+                    rec_obs['demand_passive_houses'] = passive_demands
+                if 'generations_passive_houses' in self._obs_rec_keys:
+                    rec_obs['generations_passive_houses'] = passive_generation
+                if 'tot_demands_base' in self._obs_rec_keys:
+                    rec_obs['tot_demands_base'] += passive_demands.sum()
+                if 'tot_generations' in self._obs_rec_keys:
+                    rec_obs['tot_generations'] += passive_generation.sum()
+                if 'mean_demands_base' in self._obs_rec_keys:
+                    rec_obs['mean_demands_base'] = (rec_obs['mean_demands_base'] * self.num_battery_agents + passive_demands.sum()) / (self.num_battery_agents + self.num_passive_houses)
+                if 'mean_generations' in self._obs_rec_keys:
+                    rec_obs['mean_generations'] = (rec_obs['mean_generations'] * self.num_battery_agents + passive_generation.sum()) / (self.num_battery_agents + self.num_passive_houses)
 
             obs[self.rec_agent] = rec_obs
 
@@ -466,38 +597,6 @@ class RECEnv(MultiAgentEnv):
             state.replace(demands_passive_houses=demands)
 
         return self.get_obs(state), state
-
-    # @partial(jax.jit, static_argnums=(0,))
-    # def step(
-    #         self,
-    #         key: chex.PRNGKey,
-    #         state: EnvState,
-    #         actions: Dict[str, chex.Array],
-    #         reset_state: Optional[State] = None,
-    # ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
-    #     """Performs step transitions in the environment. Resets the environment if done.
-    #     To control the reset state, pass `reset_state`. Otherwise, the environment will reset randomly."""
-    #
-    #     is_rec_turn = state.is_rec_turn
-    #
-    #     key, key_reset = jax.random.split(key)
-    #     obs_st, states_st, rewards, dones, infos = self.step_env(key, state, actions)
-    #
-    #     if reset_state is None:
-    #         obs_re, states_re = self.reset(key_reset)
-    #     else:
-    #         states_re = reset_state
-    #         obs_re = self.get_obs(states_re)
-    #
-    #     # Auto-reset environment based on termination
-    #     restart = jnp.logical_and(is_rec_turn, dones["__any__"])
-    #     states = jax.tree.map(
-    #         lambda x, y: jax.lax.select(restart, x, y), states_re, states_st
-    #     )
-    #     obs = jax.tree.map(
-    #         lambda x, y: jax.lax.select(restart, x, y), obs_re, obs_st
-    #     )
-    #     return obs, states, rewards, dones, infos
 
     def step_env(self, key: chex.PRNGKey, state: EnvState, actions: Dict[str, chex.Array]) -> Tuple[Dict[str, chex.Array], EnvState, Dict[str, float], Dict[str, bool], Dict]:
         return jax.lax.cond(state.is_rec_turn,
@@ -540,7 +639,7 @@ class RECEnv(MultiAgentEnv):
         dones_array = jnp.logical_or(truncated, terminated)
         done_rec = jnp.any(dones_array)
 
-        new_state = state.replace(is_rec_turn=False, done=jnp.concat([dones_array, done_rec[jnp.newaxis]]))
+        new_state = state.replace(is_rec_turn=False, done=jnp.concat([dones_array, done_rec[jnp.newaxis]]), prev_actions_rec=actions[self.rec_agent])
 
         dones = {a: dones_array[i] for i, a in enumerate(self.battery_agents)}
         dones[self.rec_agent] = done_rec
@@ -563,12 +662,15 @@ class RECEnv(MultiAgentEnv):
                 'r_tot': r_glob,
                 'r_glob': r_glob,
                 'self_consumption': self_consumption,
+                'balance_plus': balance_plus,
+                'balance_minus': balance_minus,
                 'tot_incentives': tot_incentives,
                 'rec_reward': rec_reward,
                 'generations': jnp.zeros(self.num_battery_agents),
                 'demands': jnp.zeros(self.num_battery_agents),
                 'buy_prices': jnp.zeros(self.num_battery_agents),
-                'sell_prices': jnp.zeros(self.num_battery_agents)}
+                'sell_prices': jnp.zeros(self.num_battery_agents),
+                'energy_to_batteries': jnp.zeros(self.num_battery_agents)}
 
         return self.get_obs(new_state), new_state, rewards, dones, info
 
@@ -661,12 +763,15 @@ class RECEnv(MultiAgentEnv):
                 'r_tot': r_tot,
                 'r_glob': jnp.zeros(self.num_battery_agents),
                 'self_consumption': 0.,
+                'balance_plus': 0.,
+                'balance_minus': 0.,
                 'tot_incentives': 0.,
                 'rec_reward': 0.,
                 'generations': generations,
                 'demands': demands,
                 'buy_prices': buying_prices,
-                'sell_prices': selling_prices}
+                'sell_prices': selling_prices,
+                'energy_to_batteries': new_state.battery_states.electrical_state.p}
 
         # dones_array = jnp.logical_or(truncated, terminated)
 
@@ -735,7 +840,7 @@ class RECEnv(MultiAgentEnv):
 
 
     def _calc_rec_reward(self, self_consumption, actions):
-        return self_consumption + jnp.var(actions)
+        return self_consumption + self.fairness_coeff * jnp.var(actions)
 
 
     def _calc_rec_incentives(self, state: EnvState, self_consumption: float):

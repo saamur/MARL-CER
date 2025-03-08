@@ -19,45 +19,72 @@ import algorithms.utils as utils
 from algorithms.recurrent_ppo import RecurrentActorCritic
 from ernestogym.envs_jax.multi_agent.env import RECEnv, EnvState
 from algorithms.ppo import ActorCritic
-import algorithms.recurrent_custom as recurrent_custom
 
 
 class StackedActorCritic(ActorCritic):
-    @nnx.vmap(in_axes=(0, None, None, None, 0, None, None, None, None))
-    def __init__(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list, act_net_arch: list, cri_net_arch: list, add_logistic_to_actor: bool):
-        super().__init__(in_features, out_features, activation, rngs, net_arch=net_arch, act_net_arch=act_net_arch, cri_net_arch=cri_net_arch, add_logistic_to_actor=add_logistic_to_actor)
+
+    def __init__(self, num_networks:int, in_features: int, out_features: int, activation: str, rngs, net_arch: list, act_net_arch: list, cri_net_arch: list, add_logistic_to_actor: bool, normalize:bool):
+
+        self.num_networks = num_networks
+
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap(in_axes=(0, None, None, None, 0, None, None, None, None, None))
+        def vmapped_fn(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list, act_net_arch: list, cri_net_arch: list, add_logistic_to_actor: bool, normalize:bool):
+            super(StackedActorCritic, self).__init__(in_features, out_features, activation, rngs, net_arch=net_arch, act_net_arch=act_net_arch, cri_net_arch=cri_net_arch, add_logistic_to_actor=add_logistic_to_actor, normalize=normalize)
+
+        vmapped_fn(self, in_features, out_features, activation, rngs, net_arch, act_net_arch, cri_net_arch, add_logistic_to_actor, normalize)
 
     def __call__(self, x):
-        pi_loc, pi_scale, val = self._call_super(x)
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap
+        def vmapped_fn(self, x):
+            # distrax does not support vmap well
+            # specifically distrax.MultivariateNormalDiag is cited in the README to give some problems
+            # so before leaving vmap I return the arrays needed to reconstruct the distribution outside
+            pi, val = super(StackedActorCritic, self).__call__(x)
+            return pi.loc, pi.scale_diag, val
+
+        pi_loc, pi_scale, val = vmapped_fn(self, x)
         pi = distrax.MultivariateNormalDiag(pi_loc, pi_scale)
         return pi, val
 
-    @nnx.vmap
-    def _call_super(self, x):
-        #distrax does not support vmap well
-        #specifically distrax.MultivariateNormalDiag is cited in the README to give some problems
-        #so before leaving vmap I return the arrays needed to reconstruct the distribution outside
-        pi, val = super().__call__(x)
-
-        return pi.loc, pi.scale_diag, val
-
 class StackedRecurrentActorCritic(RecurrentActorCritic):
-    @nnx.vmap(in_axes=(0, None, None, None, 0, None, None, None, None, None, None, None, None, None))
-    def __init__(self, in_features: int, out_features: int, activation: str, rngs,
+
+    def __init__(self, num_networks:int, in_features: int, out_features: int, activation: str, rngs,
                  num_sequences: int,
                  lstm_net_arch: Sequence[int], lstm_act_net_arch: Sequence[int],
                  lstm_cri_net_arch: Sequence[int], lstm_activation: str,
                  net_arch: Sequence[int], act_net_arch: Sequence[int], cri_net_arch: Sequence[int],
-                 add_logistic_to_actor: bool):
+                 add_logistic_to_actor: bool,
+                 normalize:bool):
 
-        super().__init__(in_features, out_features, activation, rngs,
-                 num_sequences,
-                 lstm_net_arch=lstm_net_arch, lstm_act_net_arch=lstm_act_net_arch,
-                 lstm_cri_net_arch=lstm_cri_net_arch, lstm_activation=lstm_activation,
-                 net_arch=net_arch, act_net_arch=act_net_arch, cri_net_arch=cri_net_arch,
-                 add_logistic_to_actor=add_logistic_to_actor)
+        self.num_networks = num_networks
+
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap(in_axes=(0, None, None, None, 0, None, None, None, None, None, None, None, None, None, None))
+        def vmapped_fn(self, in_features: int, out_features: int, activation: str, rngs,
+                 num_sequences: int,
+                 lstm_net_arch: Sequence[int], lstm_act_net_arch: Sequence[int],
+                 lstm_cri_net_arch: Sequence[int], lstm_activation: str,
+                 net_arch: Sequence[int], act_net_arch: Sequence[int], cri_net_arch: Sequence[int],
+                 add_logistic_to_actor: bool,
+                 normalize:bool):
+
+            super(StackedRecurrentActorCritic, self).__init__(in_features, out_features, activation, rngs,
+                     num_sequences,
+                     lstm_net_arch=lstm_net_arch, lstm_act_net_arch=lstm_act_net_arch,
+                     lstm_cri_net_arch=lstm_cri_net_arch, lstm_activation=lstm_activation,
+                     net_arch=net_arch, act_net_arch=act_net_arch, cri_net_arch=cri_net_arch,
+                     add_logistic_to_actor=add_logistic_to_actor,
+                     normalize=normalize)
+
+        vmapped_fn(self, in_features, out_features, activation, rngs, num_sequences, lstm_net_arch, lstm_act_net_arch,
+                   lstm_cri_net_arch, lstm_activation, net_arch, act_net_arch, cri_net_arch, add_logistic_to_actor, normalize)
 
     def __call__(self, x, lstm_act_state, lstm_cri_state):
+
+        x = self.normalize_input(x)
+
         lstm_act_state, act_output = self.apply_lstm_act(x, lstm_act_state)
         pi = self.apply_act_mlp(x, act_output)
 
@@ -66,35 +93,62 @@ class StackedRecurrentActorCritic(RecurrentActorCritic):
 
         return pi, critic, lstm_act_state, lstm_cri_state
 
-    @nnx.vmap
-    def apply_lstm_act(self, x, lstm_act_prev_state):
-        return super().apply_lstm_act(x, lstm_act_prev_state)
+    def normalize_input(self, x):
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap
+        def vmapped_fn(self, x):
+            return super(StackedRecurrentActorCritic, self).normalize_input(x)
 
-    @nnx.vmap
+        return vmapped_fn(self, x)
+
+    def apply_lstm_act(self, x, lstm_act_prev_state):
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap
+        def vmapped_fn(self, x, lstm_act_prev_state):
+            return super(StackedRecurrentActorCritic, self).apply_lstm_act(x, lstm_act_prev_state)
+
+        return vmapped_fn(self, x, lstm_act_prev_state)
+
+
     def apply_lstm_cri(self, x, lstm_cri_prev_state):
-        return super().apply_lstm_cri(x, lstm_cri_prev_state)
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap
+        def vmapped_fn(self, x, lstm_cri_prev_state):
+            return super(StackedRecurrentActorCritic, self).apply_lstm_cri(x, lstm_cri_prev_state)
+
+        return vmapped_fn(self, x, lstm_cri_prev_state)
 
     def apply_act_mlp(self, x, lstm_act_output):
-        pi_loc, pi_scale_diag = self._apply_act_mlp_super(x, lstm_act_output)
+
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap
+        def vmapped_fn(self, x, lstm_act_output):
+            pi = super(StackedRecurrentActorCritic, self).apply_act_mlp(x, lstm_act_output)
+            return pi.loc, pi.scale_diag
+
+        pi_loc, pi_scale_diag = vmapped_fn(self, x, lstm_act_output)
         pi = distrax.MultivariateNormalDiag(pi_loc, pi_scale_diag)
         return pi
 
-    @nnx.vmap
-    def _apply_act_mlp_super(self, x, lstm_act_output):
-        pi = super().apply_act_mlp(x, lstm_act_output)
-        return pi.loc, pi.scale_diag
-
-    @nnx.vmap
     def apply_cri_mlp(self, x, lstm_cri_output):
-        return super().apply_cri_mlp(x, lstm_cri_output)
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap
+        def vmapped_fn(self, x, lstm_cri_output):
+            return super(StackedRecurrentActorCritic, self).apply_cri_mlp(x, lstm_cri_output)
 
-    @nnx.vmap
+        return vmapped_fn(self, x, lstm_cri_output)
+
     def get_initial_lstm_state(self):
-        return super().get_initial_lstm_state()
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap
+        def vmapped_fn(self):
+            return super(StackedRecurrentActorCritic, self).get_initial_lstm_state()
+
+        return vmapped_fn(self)
 
 
 class RECActorCritic(nnx.Module):
-    def __init__(self, in_features: int, num_battery_agents: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, passive_houses: bool=False):
+    def __init__(self, obs_keys:tuple, obs_is_local:dict, num_battery_agents: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, passive_houses: bool=False, normalize:bool=False):
 
         if act_net_arch is None:
             if net_arch is None:
@@ -104,6 +158,19 @@ class RECActorCritic(nnx.Module):
             if net_arch is None:
                 raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
             cri_net_arch = net_arch
+
+        self.obs_keys = obs_keys
+        self.obs_is_local = obs_is_local
+        self.num_battery_agents = num_battery_agents
+
+        in_features = len(obs_keys)
+
+        self.normalize = normalize
+
+        self.normalize = normalize
+        if self.normalize:
+            print('norm rec')
+            self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
 
         self.passive_houses = passive_houses
 
@@ -157,48 +224,32 @@ class RECActorCritic(nnx.Module):
 
 
     def prepare_data(self, obs):
-        demands_base = obs['demands_base_battery_houses']
-        demands_batteries = obs['demands_battery_battery_houses']
-        generations = obs['generations_battery_houses']
-        num_battery_agents = demands_batteries.shape[-1]
-        if self.passive_houses:
-            demands_base = jnp.concat((demands_base, obs['demand_passive_houses']), axis=-1)
-            demands_batteries = jnp.concat((demands_batteries, jnp.zeros_like(obs['demand_passive_houses'])), axis=-1)
-            generations = jnp.concat((generations, obs['generations_passive_houses']), axis=-1)
 
-        demand_base_rec = jnp.sum(demands_base, axis=-1)
-        demand_batteries_rec = jnp.sum(demands_batteries, axis=-1)
-        generation_rec = jnp.sum(generations, axis=-1)
+        local_obs = [obs[key] for key in self.obs_keys if self.obs_is_local[key]]
+        global_obs = [obs[key] for key in self.obs_keys if not self.obs_is_local[key]]
 
-        network_exchange = generations - demands_base - demands_batteries
-
-        network_rec_plus = jnp.sum(jnp.maximum(network_exchange, 0.), axis=-1)
-        network_rec_minus = -jnp.sum(jnp.minimum(network_exchange, 0.), axis=-1)
-
-        global_data = jnp.stack(
-            [demand_base_rec, demand_batteries_rec, generation_rec, network_rec_plus, network_rec_minus,
-             obs['sin_seconds_of_day'], obs['cos_seconds_of_day'], obs['sin_day_of_year'], obs['cos_day_of_year']],
-            axis=-1)
-
+        local_data = jnp.stack(local_obs, axis=-1)
+        global_data = jnp.stack(global_obs, axis=-1)
         global_data = jnp.expand_dims(global_data, -2)
-        global_data = jnp.repeat(global_data, num_battery_agents, axis=-2)
-
-        local_data = jnp.stack([obs['demands_base_battery_houses'], obs['demands_battery_battery_houses'],
-                                obs['generations_battery_houses']], axis=-1)
+        global_data = jnp.repeat(global_data, self.num_battery_agents, axis=-2)
 
         data = jnp.concatenate((global_data, local_data), axis=-1)
+
+        if self.normalize:
+            data = self.norm_layer(data)
 
         return data
 
 
 class RECRecurrentActorCritic(nnx.Module):
-    def __init__(self, in_features: int,
+    def __init__(self, obs_keys: tuple,
+                 obs_is_local: dict, obs_is_seq:dict,
                  num_battery_agents: int,
                  activation: str, rngs,
-                 num_sequences: int,
                  lstm_net_arch: Sequence[int] = None, lstm_act_net_arch: Sequence[int] = None,
                  lstm_cri_net_arch: Sequence[int] = None, lstm_activation: str = None,
-                 net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, passive_houses: bool=False):
+                 net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None,
+                 passive_houses: bool=False, normalize:bool=False):
 
         if act_net_arch is None:
             if net_arch is None:
@@ -218,6 +269,22 @@ class RECRecurrentActorCritic(nnx.Module):
                 raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
             lstm_cri_net_arch = lstm_net_arch
 
+        self.obs_keys = obs_keys
+        self.obs_is_local = obs_is_local
+        self.obs_is_seq = obs_is_seq
+
+        self.num_battery_agents = num_battery_agents
+        self.passive_houses = passive_houses
+
+        in_features = len(obs_keys)
+        num_sequences = len([key for key in obs_keys if obs_is_seq[key]])
+
+        self.num_sequences = num_sequences
+
+        self.normalize = normalize
+        if self.normalize:
+            self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
+
         activation = utils.activation_from_name(activation)
 
         if lstm_activation is None:
@@ -225,21 +292,17 @@ class RECRecurrentActorCritic(nnx.Module):
         else:
             lstm_activation = utils.activation_from_name(lstm_activation)
 
-        self.num_sequences = num_sequences
-        self.passive_houses = passive_houses
-        self.num_battery_agents = num_battery_agents
-
         lstm_act_net_arch = [num_sequences] + list(lstm_act_net_arch)
 
         self.lstm_act_layers = []
         for i in range(len(lstm_act_net_arch) - 1):
-            self.lstm_act_layers.append(recurrent_custom.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+            self.lstm_act_layers.append(nnx.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
 
         lstm_cri_net_arch = [num_sequences] + list(lstm_cri_net_arch)
 
         self.lstm_cri_layers = []
         for i in range(len(lstm_cri_net_arch) - 1):
-            self.lstm_cri_layers.append(recurrent_custom.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+            self.lstm_cri_layers.append(nnx.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
 
         num_non_sequences = in_features - num_sequences
 
@@ -320,36 +383,40 @@ class RECRecurrentActorCritic(nnx.Module):
         return jnp.squeeze(critic, axis=-1)
 
     def prepare_data(self, obs):
-        demands_base = obs['demands_base_battery_houses']
-        demands_batteries = obs['demands_battery_battery_houses']
-        generations = obs['generations_battery_houses']
-        num_battery_agents = demands_batteries.shape[-1]
-        if self.passive_houses:
-            demands_base = jnp.concat((demands_base, obs['demand_passive_houses']), axis=-1)
-            demands_batteries = jnp.concat((demands_batteries, jnp.zeros_like(obs['demand_passive_houses'])), axis=-1)
-            generations = jnp.concat((generations, obs['generations_passive_houses']), axis=-1)
 
-        demand_base_rec = jnp.sum(demands_base, axis=-1)
-        demand_batteries_rec = jnp.sum(demands_batteries, axis=-1)
-        generation_rec = jnp.sum(generations, axis=-1)
+        local_obs_keys = [key for key in self.obs_keys if self.obs_is_local[key]]
+        global_obs_keys = [key for key in self.obs_keys if not self.obs_is_local[key]]
 
-        network_exchange = generations - demands_base - demands_batteries
+        seq_local_obs =  [obs[key] for key in local_obs_keys if self.obs_is_seq[key]]
+        non_seq_local_obs = [obs[key] for key in local_obs_keys if not self.obs_is_seq[key]]
 
-        network_rec_plus = jnp.sum(jnp.maximum(network_exchange, 0.), axis=-1)
-        network_rec_minus = -jnp.sum(jnp.minimum(network_exchange, 0.), axis=-1)
+        seq_global_obs = [obs[key] for key in global_obs_keys if self.obs_is_seq[key]]
+        non_seq_global_obs = [obs[key] for key in global_obs_keys if not self.obs_is_seq[key]]
 
-        global_data = jnp.stack(
-            [demand_base_rec, demand_batteries_rec, generation_rec, network_rec_plus, network_rec_minus,
-             obs['sin_seconds_of_day'], obs['cos_seconds_of_day'], obs['sin_day_of_year'], obs['cos_day_of_year']],
-            axis=-1)
+        data_list = []
 
-        global_data = jnp.expand_dims(global_data, -2)
-        global_data = jnp.repeat(global_data, num_battery_agents, axis=-2)
+        if len(seq_local_obs) > 0:
+            seq_local_data = jnp.stack(seq_local_obs, axis=-1)
+            data_list.append(seq_local_data)
+        if len(seq_global_obs) > 0:
+            seq_global_data = jnp.stack(seq_global_obs, axis=-1)
+            seq_global_data = jnp.expand_dims(seq_global_data, -2)
+            seq_global_data = jnp.repeat(seq_global_data, self.num_battery_agents, axis=-2)
+            data_list.append(seq_global_data)
 
-        local_data = jnp.stack([obs['demands_base_battery_houses'], obs['demands_battery_battery_houses'],
-                                obs['generations_battery_houses']], axis=-1)
+        if len(non_seq_local_obs) > 0:
+            non_seq_local_data = jnp.stack(non_seq_local_obs, axis=-1)
+            data_list.append(non_seq_local_data)
+        if len(non_seq_global_obs) > 0:
+            non_seq_global_data = jnp.stack(non_seq_global_obs, axis=-1)
+            non_seq_global_data = jnp.expand_dims(non_seq_global_data, -2)
+            non_seq_global_data = jnp.repeat(non_seq_global_data, self.num_battery_agents, axis=-2)
+            data_list.append(non_seq_global_data)
 
-        data = jnp.concatenate((local_data, global_data), axis=-1)
+        data = jnp.concatenate(data_list, axis=-1)
+
+        if self.normalize:
+            data = self.norm_layer(data)
 
         return data
 
@@ -396,10 +463,11 @@ def make_train(config, env:RECEnv):
     config['BATTERY_NUM_SEQUENCES'] = env.num_battery_obs_sequences
 
     config["REC_ACTION_SPACE_SIZE"] = env.action_space(env.rec_agent).shape[0]
-    config["REC_INPUT_NETWORK_SIZE"] = 12        #fixme bruttissimo hardcoded
+    config["REC_OBS_KEYS"] = tuple(env._obs_rec_keys)
     config['NUM_BATTERY_AGENTS'] = env.num_battery_agents
     config['PASSIVE_HOUSES'] = (env.num_passive_houses>0)
-    config['REC_NUM_SEQUENCES'] = 8
+    config['REC_OBS_IS_SEQUENCE'] = env.obs_is_sequence_rec
+    config['REC_OBS_IS_LOCAL'] = env.obs_is_local_rec
 
     env = VecEnvJaxMARL(env)
 
@@ -410,13 +478,6 @@ def make_train(config, env:RECEnv):
     #     env = NormalizeVecReward(env, config["GAMMA"])
 
     def schedule_builder(lr_init, lr_end):
-        # def linear_schedule(count):
-        #     frac = (
-        #         1.0
-        #         - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
-        #         / config["NUM_UPDATES"]
-        #     )
-        #     return lr * frac
 
         tot_steps = config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"] * config["NUM_UPDATES"]
 
@@ -637,16 +698,32 @@ def train(env:RECEnv, config, train_state:TrainState, rng, validate=True, freq_v
 
     runner_state, val_info = runner_state_plus
 
+    networks_batteries, optimizer_batteries, network_rec, optimizer_rec = nnx.merge(runner_state.train_state.graph_def,
+                                                                                    runner_state.train_state.state)
+
+    networks_batteries.eval()
+    network_rec.eval()
+
+    train_state = TrainState(graph_def=runner_state.train_state.graph_def,
+                             state=nnx.state((networks_batteries, optimizer_batteries, network_rec, optimizer_rec)))
+
+    runner_state._replace(train_state=train_state)
+
     if validate:
         return {'runner_state': runner_state, 'metrics': metric, 'val_info': val_info}
     else:
         return {'runner_state': runner_state, 'metrics': metric}
 
 def collect_trajectories(runner_state: RunnerState, config, env):
-    def _env_step(runner_state: RunnerState, unused):
+    networks_batteries, optimizer_batteries, network_rec, optimizer_rec = nnx.merge(runner_state.train_state.graph_def,
+                                                                                    runner_state.train_state.state)
 
-        networks_batteries, _, network_rec, _ = nnx.merge(runner_state.train_state.graph_def,
-                                                          runner_state.train_state.state)
+    networks_batteries.eval()
+    network_rec.eval()
+
+    def _env_step(carry):
+
+        networks_batteries, network_rec, runner_state = carry
 
         # print(type(networks_batteries), type(optimizer_batteries), type(network_rec), type(optimizer_rec))
 
@@ -775,13 +852,23 @@ def collect_trajectories(runner_state: RunnerState, config, env):
                                              last_lstm_state_rec=LSTMState(lstm_act_state_rec,
                                                                            lstm_cri_state_rec))
 
-        return runner_state, transition
+        return (networks_batteries, network_rec, runner_state), transition
 
     # jax.debug.print('collecting traj', ordered=True)
 
-    runner_state, traj_batch = jax.lax.scan(
-        _env_step, runner_state, None, config["NUM_STEPS"]
-    )
+    # runner_state, traj_batch = jax.lax.scan(
+    #     _env_step, runner_state, None, config["NUM_STEPS"]
+    # )
+
+    carry, traj_batch = nnx.scan(_env_step,
+                                 in_axes=nnx.Carry,
+                                 out_axes=(nnx.Carry, 0),
+                                 length=config["NUM_STEPS"])((networks_batteries, network_rec, runner_state))
+
+    networks_batteries, network_rec, runner_state = carry
+
+    train_state = runner_state.train_state.replace(state=nnx.state((networks_batteries, optimizer_batteries, network_rec, optimizer_rec)))
+    runner_state = runner_state._replace(train_state=train_state)
 
     return runner_state, traj_batch
 
@@ -850,9 +937,10 @@ def update_batteries_network(runner_state, traj_batch, advantages, targets, conf
 
                 # CALCULATE ACTOR LOSS
                 ratio = jnp.exp(log_prob - traj_batch_log_probs)
-                gae = jax.lax.cond(config["NORMALIZE_ADVANTAGES"],
-                                   lambda: (gae - gae.mean(axis=1, keepdims=True)) / (gae.std(axis=1, keepdims=True) + 1e-8),
-                                   lambda: gae)
+
+                if config["NORMALIZE_ADVANTAGES"]:
+                    gae = (gae - gae.mean(axis=1, keepdims=True)) / (gae.std(axis=1, keepdims=True) + 1e-8)
+
                 loss_actor1 = ratio * gae
                 loss_actor2 = (
                         jnp.clip(
@@ -881,34 +969,31 @@ def update_batteries_network(runner_state, traj_batch, advantages, targets, conf
 
             def _loss_fn_batteries_recurrent(network, traj_batch:Transition, gae, targets):
 
-                init_states = network.get_initial_lstm_state()
+                normalized_obs_batteries_first = network.normalize_input(traj_batch.obs_batteries.swapaxes(0, 1))
 
-                def forward_pass_lstm(states, data):
-                    obs, beginning = data
+                def forward_pass_lstm(carry, obs, beginning):
+                    network, act_state, cri_state = carry
 
                     act_state, cri_state = jax.tree.map(lambda x, y: jnp.where(beginning[(slice(None),) + (None,)*(x.ndim-1)], x, y),
-                                                        init_states,
-                                                        states)
+                                                        network.get_initial_lstm_state(),
+                                                        (act_state, cri_state))
                     #jnp.where(beginning, init_states, states)
                     act_state, act_output = network.apply_lstm_act(obs, act_state)
                     cri_state, cri_output = network.apply_lstm_cri(obs, cri_state)
-                    return (act_state, cri_state), (act_output, cri_output)
+                    return (network, act_state, cri_state), act_output, cri_output
 
-                _, lstm_output = jax.lax.scan(forward_pass_lstm,
-                                              jax.tree.map(lambda x: x[0], (traj_batch.lstm_states_prev_batteries.act_state,
-                                                                            traj_batch.lstm_states_prev_batteries.cri_state)),
-                                              (traj_batch.obs_batteries, traj_batch.done_prev_batteries),
-                                              unroll=16)
+                _, act_outputs, cri_outputs = nnx.scan(forward_pass_lstm,
+                                                       in_axes=(nnx.Carry, 1, 0),
+                                                       out_axes=(nnx.Carry, 1, 1),
+                                                       unroll=16)((network,) + jax.tree.map(lambda x: x[0], (traj_batch.lstm_states_prev_batteries.act_state, traj_batch.lstm_states_prev_batteries.cri_state)),
+                                                                  normalized_obs_batteries_first, traj_batch.done_prev_batteries)
 
-                act_outputs, cri_outputs = jax.tree.map(lambda x: x.swapaxes(0, 1), lstm_output)
-
-                obs_batteries_first = traj_batch.obs_batteries.swapaxes(0, 1)
-
-                pi = network.apply_act_mlp(obs_batteries_first, act_outputs)
-                values = network.apply_cri_mlp(obs_batteries_first, cri_outputs)
+                pi = network.apply_act_mlp(normalized_obs_batteries_first, act_outputs)
+                values = network.apply_cri_mlp(normalized_obs_batteries_first, cri_outputs)
                 log_prob = pi.log_prob(traj_batch.actions_batteries.swapaxes(0, 1))
 
                 values_time_first = values.swapaxes(0, 1)
+                log_prob_time_first = log_prob.swapaxes(0, 1)
 
                 # CALCULATE VALUE LOSS
                 value_pred_clipped = traj_batch.values_batteries + (
@@ -922,10 +1007,11 @@ def update_batteries_network(runner_state, traj_batch, advantages, targets, conf
                 assert value_loss.shape == (config['NUM_BATTERY_AGENTS'],)
 
                 # CALCULATE ACTOR LOSS
-                ratio = jnp.exp(log_prob.swapaxes(0, 1) - traj_batch.log_prob_batteries)
-                gae = jax.lax.cond(config["NORMALIZE_ADVANTAGES"],
-                                   lambda: (gae - gae.mean(axis=0, keepdims=True)) / (gae.std(axis=0, keepdims=True) + 1e-8),
-                                   lambda: gae)
+                ratio = jnp.exp(log_prob_time_first - traj_batch.log_prob_batteries)
+
+                if config["NORMALIZE_ADVANTAGES"]:
+                    gae = (gae - gae.mean(axis=0, keepdims=True)) / (gae.std(axis=0, keepdims=True) + 1e-8)
+
                 loss_actor1 = ratio * gae
                 loss_actor2 = (
                         jnp.clip(
@@ -953,6 +1039,8 @@ def update_batteries_network(runner_state, traj_batch, advantages, targets, conf
 
             networks_batteries, optimizer_batteries, network_rec, optimizer_rec = nnx.merge(train_state.graph_def,
                                                                                             train_state.state)
+
+            networks_batteries.train()
 
             # traj_data_batteries_for_loss = jax.tree.map(lambda x: x.swapaxes(0, 1), traj_data_batteries_for_loss)
 
@@ -1038,7 +1126,7 @@ def update_batteries_network(runner_state, traj_batch, advantages, targets, conf
         _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
     )
 
-    jax.debug.print('bat loss {x}', x=loss_info[0])
+    # jax.debug.print('bat loss {x}', x=loss_info[0])
 
     train_state = update_state[0]
     rng = update_state[-1]
@@ -1079,9 +1167,10 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
 
                 # CALCULATE ACTOR LOSS
                 ratio = jnp.exp(log_prob - traj_batch_log_probs)
-                gae = jax.lax.cond(config["NORMALIZE_ADVANTAGES"],
-                                   lambda: (gae - gae.mean()) / (gae.std() + 1e-8),
-                                   lambda: gae)
+
+                if config["NORMALIZE_ADVANTAGES"]:
+                    gae = (gae - gae.mean()) / (gae.std() + 1e-8)
+
                 loss_actor1 = ratio * gae
                 loss_actor2 = (
                         jnp.clip(
@@ -1106,34 +1195,23 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
             def _loss_fn_rec_recurrent(network, traj_batch:Transition, gae, targets):
                 # RERUN NETWORK
 
-                init_states = network.get_initial_lstm_state()
-
-                def forward_pass_lstm(states, iter_data):
-                    network_input, beginning = iter_data
-
-                    act_state, cri_state = jax.lax.cond(beginning, lambda: init_states, lambda: states)
-                    act_state, act_output = network.apply_lstm_act(network_input, act_state)
-                    cri_state, cri_output = network.apply_lstm_cri(network_input, cri_state)
-                    return (act_state, cri_state), (act_output, cri_output)
-
-                #
-                # # print(jax.tree.map(lambda x: x[0].shape, (traj_batch.lstm_states_prev.act_state, traj_batch.lstm_states_prev.act_state)))
-                #
-
                 data_for_network = network.prepare_data(traj_batch.obs_rec)
 
-                _, lstm_output = jax.lax.scan(forward_pass_lstm,
-                                              jax.tree.map(lambda x: x[0], (traj_batch.lstm_states_prev_rec.act_state,
-                                                                            traj_batch.lstm_states_prev_rec.cri_state)),
-                                              (data_for_network, traj_batch.done_prev_rec),
-                                              unroll=16)
+                def forward_pass_lstm(carry, network_input, beginning):
+                    network, act_state, cri_state = carry
 
-                act_outputs, cri_outputs = lstm_output
+                    init_states = network.get_initial_lstm_state()
 
-                # pi, values, _, _ = network(traj_batch.obs, prev_act_state, prev_cri_state)
+                    act_state, cri_state = jax.lax.cond(beginning, lambda: init_states, lambda: (act_state, cri_state))
+                    act_state, act_output = network.apply_lstm_act(network_input, act_state)
+                    cri_state, cri_output = network.apply_lstm_cri(network_input, cri_state)
+                    return (network, act_state, cri_state), act_output, cri_output
 
-                # lstm_output_act, lstm_output_cri = lstm_output
-                #
+                _, act_outputs, cri_outputs = nnx.scan(forward_pass_lstm,
+                                                       in_axes=(nnx.Carry, 0, 0),
+                                                       out_axes=(nnx.Carry, 0, 0),
+                                                       unroll=16)((network,) + jax.tree.map(lambda x: x[0], (traj_batch.lstm_states_prev_rec.act_state, traj_batch.lstm_states_prev_rec.cri_state)),
+                                                                  data_for_network, traj_batch.done_prev_rec)
 
                 pi = network.apply_act_mlp(data_for_network, act_outputs)
                 values = network.apply_cri_mlp(data_for_network, cri_outputs)
@@ -1169,6 +1247,8 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
             networks_batteries, optimizer_batteries, network_rec, optimizer_rec = nnx.merge(train_state.graph_def,
                                                                                             train_state.state)
 
+            network_rec.train()
+
             # traj_data_batteries_for_loss = jax.tree.map(lambda x: x.swapaxes(0, 1), traj_data_batteries_for_loss)
 
             # print('traj_data_batteries_for_loss')
@@ -1185,6 +1265,25 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
                 advantages,
                 targets
             )
+
+
+
+            # def check_pytree(pytree):
+            #     for key, leaf in jax.tree.leaves_with_path(pytree):
+            #         checkify.check(jnp.logical_not(jnp.isfinite(leaf).all()), 'nope, the problem is' + str(key))
+            #         jax.debug.print('{a}\t{x}', a=jnp.logical_not(jnp.isfinite(leaf).all()), x=key)
+            #
+            # jittable_check_pytree = checkify.checkify(check_pytree)
+            #
+            # jax.debug.breakpoint()
+            #
+            # jittable_check_pytree(nnx.state(network_rec, nnx.Param))
+            # jittable_check_pytree(traj_batch)
+            # jittable_check_pytree(advantages)
+            # jittable_check_pytree(targets)
+            # jittable_check_pytree(grads_rec)
+            # jittable_check_pytree(total_loss_rec)
+
             # print('tot loss batteites')
             # print(jax.tree_map(lambda x: x.shape, total_loss_batteries))
             # jax.debug.print('rec {x}', x=total_loss_rec[0])
@@ -1251,7 +1350,7 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
         _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
     )
 
-    jax.debug.print('rec loss {x}', x=loss_info[0])
+    # jax.debug.print('rec loss {x}', x=loss_info[0])
 
     train_state = update_state[0]
     rng = update_state[-1]

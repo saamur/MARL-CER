@@ -1,4 +1,4 @@
-num_battery_houses: 5
+num_battery_houses: 3
 num_passive_houses: 0
 
 demand:
@@ -43,15 +43,19 @@ battery_observations:
   - seconds_of_day
   - generation
   - market
+  - network_REC_diff
 
 rec_observations:
-  - demand
-  - temperature
-  - soc
+  - demands_base_battery_houses
+  - demands_battery_battery_houses
+  - generations_base_battery_houses
+  - mean_demands_base
+  - mean_demands_batteries
+  - mean_generations
   - day_of_year
   - seconds_of_day
-  - generation
-  - market
+  - network_REC_plus
+  - network_REC_minus
 
 # Aging options determining the reward term related to degradation
 # Only one can be set to True (at the moment)
@@ -77,7 +81,8 @@ reward:
 use_reward_normalization: True
 
 
-valorization_incentive_coeff: 0.000008
-incentivizing_tariff_coeff: 0.00008
-incentivizing_tariff_max_variable: 0.00004
+valorization_incentive_coeff: 0.000008 #0.000008 * 30
+incentivizing_tariff_coeff: 0.00008 #0.00008 * 30
+incentivizing_tariff_max_variable: 0.00004 #0.00004 * 30
 incentivizing_tariff_baseline_variable: 0.00018
+fairness_coeff: 0.

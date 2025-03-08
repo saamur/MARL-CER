@@ -83,26 +83,60 @@ def parameter_generator(battery_options: str= BATTERY_OPTIONS,
         for i in range(num_battery_houses):
             model_configs.append([electrical_models[i], thermal_models[i]])
 
+    def split_demand_between_houses(df, num):
+        demand_profiles_names = df.columns.tolist()
 
-    demand = read_csv(world_settings['demand']['path']).drop(columns=['delta_time'])
-    demand_profiles = demand.columns.tolist()
+        random.shuffle(demand_profiles_names)
+
+        num_profiles_each_house = len(demand_profiles_names) // num
+
+        demand_profiles = []
+        for start in range(0, len(demand_profiles_names), num_profiles_each_house):
+            demand_profiles.append(demand_profiles_names[start:start + num_profiles_each_house])
+            start += num_profiles_each_house
+
+        return demand_profiles
 
     random.seed(seed)
-    random.shuffle(demand_profiles)
+    if isinstance(world_settings['demand']['path'], str):
+        demand = read_csv(world_settings['demand']['path']).drop(columns=['delta_time'])
+        demand_profiles = split_demand_between_houses(demand, num_battery_houses + num_passive_houses)
+        battery_houses_demand_profiles = demand_profiles[:num_battery_houses]
+        passive_houses_demand_profiles = demand_profiles[num_battery_houses:]
+        battery_houses_demands = [demand[profiles] for profiles in battery_houses_demand_profiles]
+        passive_houses_demands = [demand[profiles] for profiles in passive_houses_demand_profiles]
+        battery_houses_demand_paths = [world_settings['demand']['path']] * num_battery_houses
+        passive_houses_demand_paths = [world_settings['demand']['path']] * num_passive_houses
+    elif isinstance(world_settings['demand']['path'], dict):
+        def dict_demand(value, num):
+            if isinstance(value, str):
+                demand = read_csv(value).drop(columns=['delta_time'])
+                demand_profiles = split_demand_between_houses(demand, num)
+                demands = [demand[profiles] for profiles in demand_profiles]
+                demand_paths = [value] * num
+            elif isinstance(value, list):
+                print('yaaaas')
+                demand_profiles = []
+                demands = []
+                demand_paths = []
+                for path in value:
+                    demand = read_csv(path).drop(columns=['delta_time'])
+                    demands.append(demand)
+                    demand_profiles.append(demand.columns.tolist())
+                    demand_paths.append(path)
+            else:
+                raise TypeError('demand.path.battery_houses must be a list or a str')
 
-    num_profiles_each_house = len(demand_profiles) // (num_battery_houses + num_passive_houses)
+            return demands, demand_profiles, demand_paths
 
-    start = 0
+        battery_houses_demands, battery_houses_demand_profiles, battery_houses_demand_paths = dict_demand(world_settings['demand']['path']['battery_houses_demand'], num_battery_houses)
+        if num_passive_houses > 0:
+            passive_houses_demands, passive_houses_demand_profiles, passive_houses_demand_paths = dict_demand(world_settings['demand']['path']['passive_houses_demand'], num_passive_houses)
+        else:
+            passive_houses_demands, passive_houses_demand_profiles, passive_houses_demand_paths = [], [], []
+    else:
+        raise TypeError('demand.path must be a list or a str')
 
-    battery_houses_demand_profiles = []
-    for battery_house in range(num_battery_houses):
-        battery_houses_demand_profiles.append(demand_profiles[start:start+num_profiles_each_house])
-        start += num_profiles_each_house
-
-    passive_houses_demand_profiles = []
-    for battery_house in range(num_battery_houses):
-        passive_houses_demand_profiles.append(demand_profiles[start:start + num_profiles_each_house])
-        start += num_profiles_each_house
 
 
     generation_data = read_csv(world_settings['generation']['path'])['PV']
@@ -117,11 +151,11 @@ def parameter_generator(battery_options: str= BATTERY_OPTIONS,
               'batteries': batteries_params,
               'model_config': model_configs,
               'input_var': input_var,
-              'demands_battery_houses': [{'data': demand[battery_houses_demand_profiles[i]],
+              'demands_battery_houses': [{'data': battery_houses_demands[i],
                                           'timestep': world_settings['demand']['timestep'],
                                           'demand_profiles': battery_houses_demand_profiles[i],
                                           'data_usage': world_settings['demand']['data_usage'],
-                                          'path': world_settings['demand']['path']} for i in range(num_battery_houses)],
+                                          'path': battery_houses_demand_paths[i]} for i in range(num_battery_houses)],
               'generations_battery_houses': [{'data': generation_data,
                                               'timestep': world_settings['generation']['timestep'],
                                               'data_usage': world_settings['generation']['data_usage'],
@@ -139,11 +173,11 @@ def parameter_generator(battery_options: str= BATTERY_OPTIONS,
                                            'data_usage': world_settings['temp_amb']['data_usage'],
                                            'path': world_settings['temp_amb']['path']}] * num_battery_houses,
 
-              'demands_passive_houses': [{'data': demand[passive_houses_demand_profiles[i]],
+              'demands_passive_houses': [{'data': passive_houses_demands[i],
                                           'timestep': world_settings['demand']['timestep'],
                                           'demand_profiles': passive_houses_demand_profiles[i],
                                           'data_usage': world_settings['demand']['data_usage'],
-                                          'path': world_settings['demand']['path']} for i in range(num_passive_houses)],
+                                          'path': passive_houses_demand_paths[i]} for i in range(num_passive_houses)],
               'generations_passive_houses': [{'data': generation_data,
                                               'timestep': world_settings['generation']['timestep'],
                                               'data_usage': world_settings['generation']['data_usage'],
@@ -180,9 +214,8 @@ def parameter_generator(battery_options: str= BATTERY_OPTIONS,
               'valorization_incentive_coeff': world_settings['valorization_incentive_coeff'],
               'incentivizing_tariff_coeff': world_settings['incentivizing_tariff_coeff'],
               'incentivizing_tariff_max_variable': world_settings['incentivizing_tariff_max_variable'],
-              'incentivizing_tariff_baseline_variable': world_settings['incentivizing_tariff_baseline_variable']
-
-
+              'incentivizing_tariff_baseline_variable': world_settings['incentivizing_tariff_baseline_variable'],
+              'fairness_coeff': world_settings['fairness_coeff']
 
     }
 
