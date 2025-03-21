@@ -36,7 +36,7 @@ def parameter_generator(battery_options: str = BATTERY_OPTIONS,
                         use_reward_normalization: bool = None,
                         bypass_yaml_schema: bool = False,
                         spread_factor: float = 1.0,
-                        replacement_cost: float = 3000.0
+                        replacement_cost: float = None
                         ) -> dict:
     """
     Generates the parameters dict for `EnergyStorageEnv`.

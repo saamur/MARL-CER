@@ -2,7 +2,13 @@ num_battery_houses: 3
 num_passive_houses: 0
 
 demand:
-  path: "ernestogym/ernesto_jax/data/demand/rse_profiles_test.csv"
+  path:
+    battery_houses_demand:
+      - 'ernestogym/ernesto_jax/data/demand/rse_profiles_test_0_scale_0.5.csv'
+      - 'ernestogym/ernesto_jax/data/demand/rse_profiles_test_1_scale_1.0.csv'
+      - 'ernestogym/ernesto_jax/data/demand/rse_profiles_test_2_scale_2.0.csv'
+    passive_houses_demand:
+      - '...'
   timestep: 3600 # seconds
   test_profiles: # column label to use to test the agent
     - "70"
@@ -73,6 +79,7 @@ reward:
   operational_cost_coeff: 0
   degradation_coeff: 1
   clip_action_coeff: 1
+  glob_coeff: 1
 
 use_reward_normalization: True
 

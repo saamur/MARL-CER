@@ -2,6 +2,9 @@ import os
 from copy import deepcopy
 from datetime import datetime
 
+import numpy as np
+
+import jax.tree
 from flax.core import unfreeze
 
 import flax.nnx as nnx
@@ -157,11 +160,11 @@ def construct_rec_net_from_config_multi_agent(config, rng):
         raise ValueError('Invalid network name')
 
 
-def save_state(network, config, params: dict, val_info:dict=None, env_type='normal', additional_info=''):
+def save_state(network, config, params: dict, val_info:dict=None, train_info:dict=None, env_type='normal', additional_info=''):
     dir_name = (datetime.now().strftime("%Y%m%d_%H%M%S") +
-                '_lr_' + str(config['LR']) +
-                '_tot_timesteps_' + str(config['TOTAL_TIMESTEPS']) +
-                '_anneal_rl_' + str(config['ANNEAL_LR']) +
+                '_lr_' + str(config.get('LR')) +
+                '_tot_timesteps_' + str(config.get('TOTAL_TIMESTEPS')) +
+                '_rl_sched_' + str(config.get('LR_SCHEDULE')) +
                 '_' + env_type +
                 '_' + config['NETWORK'])
 
@@ -190,8 +193,15 @@ def save_state(network, config, params: dict, val_info:dict=None, env_type='norm
     with open(path_base + dir_name + '/params.pkl', 'wb') as file:
         pickle.dump(params, file)
 
+    # val_info = jax.tree.map(lambda x: np.array(x), val_info)
+
     with open(path_base + dir_name + '/val_info.pkl', 'wb') as file:
         pickle.dump(val_info, file)
+
+    # train_info = jax.tree.map(lambda x: np.array(x), train_info)
+
+    with open(path_base + dir_name + '/train_info.pkl', 'wb') as file:
+        pickle.dump(train_info, file)
 
 
 def restore_state(path):
@@ -213,54 +223,66 @@ def restore_state(path):
     with open(path + '/val_info.pkl', 'rb') as file:
         val_info = pickle.load(file)
 
-    return network, config, params, val_info
+    if os.path.isfile(path + '/train_info.pkl'):
+        with open(path + '/train_info.pkl', 'rb') as file:
+            train_info = pickle.load(file)
+    else:
+        train_info = None
 
-def save_state_multiagent(networks_batteries, network_rec, config, params: dict, train_info:dict=None, val_info:dict=None, env_type='normal', additional_info=''):
-    dir_name = (datetime.now().strftime("%Y%m%d_%H%M%S") +
-                '_bat_net_type_' + str(config['NETWORK_TYPE_BATTERIES']) +
-                '_rec_net_type_' + str(config['NETWORK_TYPE_REC']) +
-                '_lr_bat_' + str(config.get('LR_BATTERIES')) +
-                '_lr_REC_' + str(config.get('LR_SCHEDULE')) +
-                '_tot_timesteps_' + str(config.get('TOTAL_TIMESTEPS')) +
-                '_lr_sched_' + str(config.get('LR_SCHEDULE')) +
-                '_' + env_type +
-                '_multiagent')
+    return network, config, params, train_info, val_info
 
-    if additional_info != '':
-        dir_name += '_' + additional_info
+def save_state_multiagent(directory, networks_batteries, network_rec, config: dict, params: dict=None, train_info:dict=None, val_info:dict=None, is_checkpoint=False, num_steps=-1, additional_info=''):
+    # dir_name = (datetime.now().strftime("%Y%m%d_%H%M%S") +
+    #             '_bat_net_type_' + str(config['NETWORK_TYPE_BATTERIES']) +
+    #             '_rec_net_type_' + str(config['NETWORK_TYPE_REC']) +
+    #             '_lr_bat_' + str(config.get('LR_BATTERIES')) +
+    #             '_lr_REC_' + str(config.get('LR_SCHEDULE')) +
+    #             '_tot_timesteps_' + str(config.get('TOTAL_TIMESTEPS')) +
+    #             '_lr_sched_' + str(config.get('LR_SCHEDULE')) +
+    #             '_' + env_type +
+    #             '_multiagent')
 
-    os.makedirs(path_base + dir_name)
+    if is_checkpoint:
+        directory = directory + 'checkpoints/' + datetime.now().strftime("%Y%m%d_%H%M%S") + '_' + str(num_steps) +  '/'
+
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
     _, state_batteries = nnx.split(networks_batteries)
     _, state_rec = nnx.split(network_rec)
 
-    with lzma.open(path_base + dir_name + '/state_batteries.xz', 'wb') as file:
+    with lzma.open(directory + 'state_batteries.xz', 'wb') as file:
         pickle.dump(state_batteries, file)
-    with lzma.open(path_base + dir_name + '/state_rec.xz', 'wb') as file:
+    with lzma.open(directory + 'state_rec.xz', 'wb') as file:
         pickle.dump(state_rec, file)
 
 
-    with lzma.open(path_base + dir_name + '/config.xz', 'wb') as file:
+    with lzma.open(directory + 'config.xz', 'wb') as file:
         pickle.dump(config, file)
 
     params = deepcopy(params)
 
-    for record in (params['demands_battery_houses'] + params['demands_passive_houses'] +
-                   params['generations_battery_houses'] + params['generations_passive_houses'] +
-                   params['selling_prices_battery_houses'] + params['selling_prices_passive_houses'] +
-                   params['buying_prices_battery_houses'] + params['buying_prices_passive_houses'] +
-                   params['temp_amb_battery_houses']):
-        if 'data' in record.keys():
-            del record['data']
+    if params is not None:
+        for record in (params['demands_battery_houses'] + params['demands_passive_houses'] +
+                       params['generations_battery_houses'] + params['generations_passive_houses'] +
+                       params['selling_prices_battery_houses'] + params['selling_prices_passive_houses'] +
+                       params['buying_prices_battery_houses'] + params['buying_prices_passive_houses'] +
+                       params['temp_amb_battery_houses']):
+            if 'data' in record.keys():
+                del record['data']
 
-    with lzma.open(path_base + dir_name + '/params.xz', 'wb') as file:
+    with lzma.open(directory + 'params.xz', 'wb') as file:
         pickle.dump(params, file)
 
-    with lzma.open(path_base + dir_name + '/train_info.xz', 'wb') as file:
-        pickle.dump(train_info, file)
+    val_info = jax.tree.map(lambda x: np.array(x), val_info)
 
-    with lzma.open(path_base + dir_name + '/val_info.xz', 'wb') as file:
+    with lzma.open(directory + 'val_info.xz', 'wb') as file:
         pickle.dump(val_info, file)
+
+    train_info = jax.tree.map(lambda x: np.array(x), train_info)
+
+    with lzma.open(directory + '/train_info.xz', 'wb') as file:
+        pickle.dump(train_info, file)
 
 
 def restore_state_multi_agent(path):

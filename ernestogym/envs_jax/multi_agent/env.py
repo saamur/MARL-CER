@@ -32,6 +32,7 @@ class EnvState(State):
     demands_passive_houses: DemandData
 
     prev_actions_rec: jnp.array
+    exp_avg_rev_actions_rec: jnp.array
 
     iter: int
     timeframe: int
@@ -178,7 +179,12 @@ class RECEnv(MultiAgentEnv):
         self.op_cost_coeff = settings['reward']['operational_cost_coeff'] if 'operational_cost_coeff' in settings['reward'] else 0
         self.deg_coeff = settings['reward']['degradation_coeff'] if 'degradation_coeff' in settings['reward'] else 0
         self.clip_action_coeff = settings['reward']['clip_action_coeff'] if 'clip_action_coeff' in settings['reward'] else 0
+        self.glob_coeff = settings['reward']['glob_coeff'] if 'glob_coeff' in settings['reward'] else 0
         self.use_reward_normalization = settings['use_reward_normalization']
+
+        print('norm? ' + str(self.use_reward_normalization))
+
+        self.smoothing_factor_rec_actions = settings['smoothing_factor_rec_actions']
 
         ########################## OBSERVATION SPACES ##########################
 
@@ -370,6 +376,12 @@ class RECEnv(MultiAgentEnv):
             self.obs_is_sequence_rec['rec_actions_prev_step'] = True
             self.obs_is_local_rec['rec_actions_prev_step'] = True
 
+        if 'exponential_average_rec_actions_prev_step' in settings['rec_obs']:
+            self._obs_rec_keys.append('exponential_average_rec_actions_prev_step')
+            rec_obs_space['exponential_average_rec_actions_prev_step'] = spaces.Box(low=0., high=1., shape=(self.num_battery_agents,))
+            self.obs_is_sequence_rec['exponential_average_rec_actions_prev_step'] = False
+            self.obs_is_local_rec['exponential_average_rec_actions_prev_step'] = True
+
         # self._obs_rec_keys = tuple(self._obs_rec_keys)
 
         self.observation_spaces[self.rec_agent] = spaces.Dict(rec_obs_space)
@@ -389,7 +401,8 @@ class RECEnv(MultiAgentEnv):
                                    step=-1,
                                    demands_battery_houses=demands_battery_houses,
                                    demands_passive_houses=demands_passive_houses,
-                                   prev_actions_rec=jnp.ones(self.num_battery_agents)/self.num_battery_agents)
+                                   prev_actions_rec=jnp.ones(self.num_battery_agents)/self.num_battery_agents,
+                                   exp_avg_rev_actions_rec=jnp.ones(self.num_battery_agents)/self.num_battery_agents)
 
     @partial(jax.vmap, in_axes=(None, 0, None))
     def _get_generations(self, gen_data, timestep):
@@ -498,6 +511,9 @@ class RECEnv(MultiAgentEnv):
             if 'rec_actions_prev_step' in self._obs_rec_keys:
                 rec_obs['rec_actions_prev_step'] = jnp.zeros(self.num_battery_agents)
 
+            if 'exponential_average_rec_actions_prev_step' in self._obs_rec_keys:
+                rec_obs['exponential_average_rec_actions_prev_step'] = jnp.zeros(self.num_battery_agents)
+
             for o in [key for key in self._obs_rec_keys if not self.obs_is_local_rec[key]]:
                 rec_obs[o] = 0.
             obs[self.rec_agent] = rec_obs
@@ -549,6 +565,8 @@ class RECEnv(MultiAgentEnv):
 
                     case 'rec_actions_prev_step':
                         rec_obs['rec_actions_prev_step'] = state.prev_actions_rec
+                    case 'exponential_average_rec_actions_prev_step':
+                        rec_obs['exponential_average_rec_actions_prev_step'] = state.exp_avg_rev_actions_rec
 
             if self.num_passive_houses > 0:
                 passive_demands = self._get_demands(state.demands_passive_houses, state.timeframe)
@@ -615,6 +633,11 @@ class RECEnv(MultiAgentEnv):
         rec_reward = self._calc_rec_reward(self_consumption, actions[self.rec_agent])
 
         r_glob = tot_incentives * actions[self.rec_agent]
+        r_glob = self.glob_coeff * r_glob
+
+        # FIXME REMOVE, NEEDED FOR EXPERIMENTS
+        # r_glob = jnp.zeros_like(r_glob)
+        # FIXME REMOVE, NEEDED FOR EXPERIMENTS
 
 
         terminated = state.battery_states.soh <= self._termination['min_soh']
@@ -639,7 +662,12 @@ class RECEnv(MultiAgentEnv):
         dones_array = jnp.logical_or(truncated, terminated)
         done_rec = jnp.any(dones_array)
 
-        new_state = state.replace(is_rec_turn=False, done=jnp.concat([dones_array, done_rec[jnp.newaxis]]), prev_actions_rec=actions[self.rec_agent])
+        new_exp_avg_rec_actions_prev_step = self.smoothing_factor_rec_actions * state.exp_avg_rev_actions_rec + (1-self.smoothing_factor_rec_actions) * actions[self.rec_agent]
+
+        new_state = state.replace(is_rec_turn=False,
+                                  done=jnp.concat([dones_array, done_rec[jnp.newaxis]]),
+                                  prev_actions_rec=actions[self.rec_agent],
+                                  exp_avg_rev_actions_rec=new_exp_avg_rec_actions_prev_step)
 
         dones = {a: dones_array[i] for i, a in enumerate(self.battery_agents)}
         dones[self.rec_agent] = done_rec
@@ -682,6 +710,12 @@ class RECEnv(MultiAgentEnv):
         last_v = state.battery_states.electrical_state.v
         i_max, i_min = jax.vmap(self.BESS.get_feasible_current, in_axes=(0, 0, None))(state.battery_states, state.battery_states.soc_state.soc, self.env_step)
 
+        # jax.debug.print('soc {x}', x=state.battery_states.soc_state.soc, ordered=True)
+        #
+        # jax.debug.print('act {x}', x=actions, ordered=True)
+        #
+        # jax.debug.print('min {x}, max {y}', x=i_min, y=i_max, ordered=True)
+
         i_to_apply = jnp.clip(actions, i_min, i_max)
 
         old_soh = state.battery_states.soh
@@ -692,18 +726,20 @@ class RECEnv(MultiAgentEnv):
 
         to_load = new_battery_states.electrical_state.p
 
-        demands = self._get_demands(state.demands_battery_houses, state.timeframe)
-        generations = self._get_generations(self.generations_battery_houses, state.timeframe)
+        demands = self._get_demands(state.demands_battery_houses, new_timeframe)
+        generations = self._get_generations(self.generations_battery_houses, new_timeframe)
 
         to_trade = generations - demands - to_load
 
 
-        buying_prices = self._get_buying_prices(self.buying_prices_battery_houses, state.timeframe)
-        selling_prices = self._get_selling_prices(self.selling_prices_battery_houses, state.timeframe)
+        buying_prices = self._get_buying_prices(self.buying_prices_battery_houses, new_timeframe)
+        selling_prices = self._get_selling_prices(self.selling_prices_battery_houses, new_timeframe)
 
         r_trading = jnp.minimum(0, to_trade) * buying_prices + jnp.maximum(0, to_trade) * selling_prices
 
-        r_clipping = -jnp.abs((actions - i_to_apply) * last_v)
+        r_clipping = -jnp.square(actions - i_to_apply)
+
+        # jax.debug.print('cl {x}, sq {y}', x=r_clipping, y=-jnp.square(actions - i_to_apply), ordered=True)
 
         r_deg = self._calc_deg_reward(old_soh, new_battery_states.soh, new_battery_states.nominal_cost, self._termination['min_soh'])
 
@@ -829,11 +865,9 @@ class RECEnv(MultiAgentEnv):
         if self.use_reward_normalization:
             norm_r_trading = r_trading / jnp.maximum(self.generations_battery_houses.max * self.selling_prices_battery_houses.max,
                                                          state.demands_battery_houses.max * self.buying_prices_battery_houses.max)
-            norm_r_op = r_op / battery_states.nominal_cost
-            norm_r_clipping = r_clipping / jnp.maximum(jnp.abs(state.demands_battery_houses.max - self.generations_battery_houses.min),
-                                                       jnp.abs(self.generations_battery_houses.max - state.demands_battery_houses.min))
+            norm_r_op = r_op / (battery_states.nominal_cost + 1e-8)
 
-            return norm_r_trading, norm_r_op, r_deg, norm_r_clipping
+            return norm_r_trading, norm_r_op, r_deg, r_clipping
 
         else:
             return r_trading, r_op, r_deg, r_clipping

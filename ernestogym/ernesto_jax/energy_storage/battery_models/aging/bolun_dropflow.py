@@ -95,6 +95,8 @@ class BolunDropflowModel:
 
         new_dropflow_state = Dropflow.add_point(state.dropflow_state, soc)
 
+        # jax.debug.print('soc: {x}', x=soc, ordered=True)
+
         new_cum_sum_temp_history = state.cum_sum_temp_history.at[state.n_steps+1].set(state.cum_sum_temp_history[state.n_steps] + temp_battery)
         new_cum_sum_soc_history = state.cum_sum_soc_history.at[state.n_steps + 1].set(state.cum_sum_soc_history[state.n_steps] + soc)
         new_n_steps = state.n_steps + 1
@@ -127,9 +129,18 @@ class BolunDropflowModel:
                      soc_stress(state.soc_stress_model.k_soc, state.soc_mean, state.soc_stress_model.soc_ref) *  # fixme siamo sicuri che devo usare la media del soc?
                      time_stress(state.time_stress_model.k_t, elapsed_time))
 
+            # jax.debug.print('temp: {x}', x=temperature_stress(state.temp_stress_model.k_temp, state.temp_battery_mean, state.temp_stress_model.temp_ref), ordered=True)
+            # jax.debug.print('soc: {x}', x=soc_stress(state.soc_stress_model.k_soc, state.soc_mean, state.soc_stress_model.soc_ref), ordered=True)
+            # jax.debug.print('time: {x}', x=time_stress(state.time_stress_model.k_t, elapsed_time), ordered=True)
+
+
+
             # jax.debug.print('jax f_cal: {x}', x=f_cal, ordered=True)
 
             new_dropflow_state, rngs, soc_means, counts, i_start, i_end, num_complete_cyc, num_prov_cyc = Dropflow.extract_new_cycles(state.dropflow_state)
+
+            # jax.debug.print('num_complete_cyc: {x}', x=num_complete_cyc, ordered=True)
+            # jax.debug.print('num_prov_cyc: {x}', x=num_prov_cyc, ordered=True)
 
             # length = len(state.temp_history)
             # indexes = jnp.arange(length)
@@ -149,10 +160,10 @@ class BolunDropflowModel:
                                                                                  num_prov_cyc=num_prov_cyc)
 
             # jax.debug.print('jax incomplete_f_cyc: {x}', x=incomplete_f_cyc, ordered=True)
-            # jax.debug.print('jax new_complete_f_cyc: {x}', x=new_iter_complete_f_cyc, ordered=True)
-            #
+            # jax.debug.print('jax new_iter_complete_f_cyc: {x}', x=new_iter_complete_f_cyc, ordered=True)
+            # #
             f_d = f_cal + state.f_cyc + new_iter_complete_f_cyc + incomplete_f_cyc
-            # jax.debug.print('jax prev_complete: {x}', x=state.f_cyc, ordered=True)
+            # # jax.debug.print('jax prev_complete: {x}', x=state.f_cyc, ordered=True)
             # jax.debug.print('jax f_d: {x}', x=f_d, ordered=True)
 
             deg = jnp.clip(1 - state.alpha_sei * jnp.exp(-state.beta_sei * f_d) - (1 - state.alpha_sei) * jnp.exp(-f_d), 0, 1)
