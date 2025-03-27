@@ -19,9 +19,24 @@ demand:
   data_usage: "end" # "circular/end"
 
 generation:
-  path: "ernestogym/ernesto_jax/data/generation/pv_ninja_2015-2019_3kW_train.csv"
+  path:
+    battery_houses_generation:
+#      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_0kWp_crystSi_14_30deg_0deg_2015_2018._train.csv'
+#      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_1kWp_crystSi_14_30deg_-60deg_2015_2018._train.csv'
+#      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_1kWp_crystSi_14_30deg_0deg_2015_2018._train.csv'
+#      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_1kWp_crystSi_14_30deg_60deg_2015_2018._train.csv'
+#      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_2kWp_crystSi_14_30deg_0deg_2015_2018._train.csv'
+
+      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_3kWp_crystSi_14_30deg_-60deg_2015_2018._train.csv'
+      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_3kWp_crystSi_14_30deg_0deg_2015_2018._train.csv'
+      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_3kWp_crystSi_14_30deg_60deg_2015_2018._train.csv'
+#      - 'ernestogym/ernesto_jax/data/generation/Timeseries_45.235_10.693_SA3_4kWp_crystSi_14_30deg_60deg_2015_2018._train.csv'
+
+    passive_houses_generation:
+      - '...'
   timestep: 3600 # seconds
   data_usage: "end" # "circular/end"
+
 
 temp_amb:
   path: "ernestogym/ernesto_jax/data/temp_amb/temp_amb_2015-2019_train.csv"
@@ -48,16 +63,22 @@ battery_observations:
   - day_of_year
   - seconds_of_day
   - generation
-  - market
+  - selling_price
+  - buying_price
+  - network_REC_diff
 
 rec_observations:
-  - demand
-  - temperature
-  - soc
+  - demands_base_battery_houses
+  - demands_battery_battery_houses
+  - generations_base_battery_houses
+  - mean_demands_base
+  - mean_demands_batteries
+  - mean_generations
   - day_of_year
   - seconds_of_day
-  - generation
-  - market
+  - network_REC_plus
+  - network_REC_minus
+  - rec_actions_prev_step
 
 # Aging options determining the reward term related to degradation
 # Only one can be set to True (at the moment)
@@ -78,14 +99,16 @@ reward:
   trading_coeff: 1
   operational_cost_coeff: 0
   degradation_coeff: 1
-  clip_action_coeff: 1
-  glob_coeff: 1
+  clip_action_coeff: 0.2
+  glob_coeff: 0
 
-use_reward_normalization: True
+use_reward_normalization: False
 
 
-valorization_incentive_coeff: 0.000008
-incentivizing_tariff_coeff: 0.00008
-incentivizing_tariff_max_variable: 0.00004
+valorization_incentive_coeff: 0.000008 #0.000008 * 30
+incentivizing_tariff_coeff: 0.00008 #0.00008 * 30
+incentivizing_tariff_max_variable: 0.00004 #0.00004 * 30
 incentivizing_tariff_baseline_variable: 0.00018
 fairness_coeff: 0.
+
+smoothing_factor_rec_actions: 0.99

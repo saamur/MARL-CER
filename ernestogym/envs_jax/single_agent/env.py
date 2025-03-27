@@ -130,6 +130,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
         self.spaces['demand'] = {'low': 0., 'high': jnp.inf}
         self._obs_keys = ['temperature', 'soc', 'demand']
         obs_is_sequence = [True, True, True]
+        self.obs_is_normalizable = [True, False, True]
 
         # Add optional 'State of Health' in observation space
         if settings['soh']:
@@ -137,6 +138,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             self._obs_keys.append('soh')
             self.spaces['soh'] = {'low': 0., 'high': 1.}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable.append(False)
 
         # Add optional 'generation' in observation space
         if self.generation_data is not None:
@@ -144,6 +146,7 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             self._obs_keys.append('generation')
             self.spaces['generation'] = {'low': 0., 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable.append(True)
 
         # Add optional 'bid' and 'ask' of energy market in observation space
         if self.buying_price_data is not None:
@@ -151,12 +154,14 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             self._obs_keys.append('buying_price')
             self.spaces['buying_price'] = {'low': 0., 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable.append(True)
 
         if self.selling_price_data is not None:
             # spaces['selling_price'] = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
             self._obs_keys.append('selling_price')
             self.spaces['selling_price'] = {'low': 0., 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable.append(True)
 
         if settings['day_of_year']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
@@ -166,6 +171,8 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             self.spaces['cos_day_of_year'] = {'low': -1, 'high': 1}
             obs_is_sequence.append(False)
             obs_is_sequence.append(False)
+            self.obs_is_normalizable.append(False)
+            self.obs_is_normalizable.append(False)
 
         if settings['seconds_of_day']:
             # spaces['seconds_of_day'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
@@ -175,6 +182,8 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             self.spaces['cos_seconds_of_day'] = {'low': -1, 'high': 1}
             obs_is_sequence.append(False)
             obs_is_sequence.append(False)
+            self.obs_is_normalizable.append(False)
+            self.obs_is_normalizable.append(False)
 
         if settings['energy_level']:
             self._obs_keys.append('energy_level')
@@ -182,10 +191,12 @@ class MicroGridEnv(environment.Environment[EnvState, EnvParams]):
             max_energy = battery_state.nominal_capacity * battery_state.soc_state.soc_max * battery_state.v_min
             self.spaces['energy_level'] = {'low': min_energy, 'high': max_energy}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable.append(True)
 
         indices = np.argsort(np.logical_not(obs_is_sequence))
 
         self._obs_keys = [self._obs_keys[i] for i in indices]
+        self.obs_is_normalizable = [self.obs_is_normalizable[i] for i in indices]
 
         self.num_obs_sequences = np.sum(obs_is_sequence)
 

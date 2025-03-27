@@ -14,6 +14,7 @@ import optax
 from typing import Sequence, NamedTuple, Any
 import distrax
 
+from algorithms.normalization_custom import RunningNorm
 import algorithms.utils as utils
 from ernestogym.envs_jax.single_agent.env import MicroGridEnv
 
@@ -25,75 +26,76 @@ from .wrappers import (
     ClipAction,
 )
 
-class ActorCritic(nnx.Module):
-    def __init__(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, add_logistic_to_actor: bool = False, normalize: bool = False):
-
-        if act_net_arch is None:
-            if net_arch is None:
-                raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
-            act_net_arch = net_arch
-        if cri_net_arch is None:
-            if net_arch is None:
-                raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
-            cri_net_arch = net_arch
-
-        act_net_arch = list(act_net_arch)
-        cri_net_arch = list(cri_net_arch)
-
-        self.normalize = normalize
-        if normalize:
-            print('norm batt')
-            self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
-
-        activation = utils.activation_from_name(activation)
-
-        act_net_arch = [in_features] + act_net_arch + [out_features]
-
-        self.act_layers = []
-        for i in range(len(act_net_arch) - 2):
-            self.act_layers.append(nnx.Linear(act_net_arch[i], act_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-            self.act_layers.append(activation)
-        self.act_layers.append(nnx.Linear(act_net_arch[-2], act_net_arch[-1], kernel_init=orthogonal(0.1), bias_init=constant(0.), rngs=rngs))
-        if add_logistic_to_actor:
-            self.act_layers.append(nnx.sigmoid)
-
-        self.log_std = nnx.Param(jnp.zeros(out_features))# - 1.)
-
-        cri_net_arch = [in_features] + cri_net_arch + [1]
-
-        self.cri_layers = []
-        for i in range(len(cri_net_arch) - 2):
-            self.cri_layers.append(nnx.Linear(cri_net_arch[i], cri_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-            self.cri_layers.append(activation)
-        self.cri_layers.append(nnx.Linear(cri_net_arch[-2], cri_net_arch[-1], kernel_init=orthogonal(1.), bias_init=constant(0.), rngs=rngs))
-
-        # self.act_dense1 = nnx.Linear(in_features, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
-        # self.act_dense2 = nnx.Linear(64, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
-        # self.act_dense3 = nnx.Linear(64, out_features, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
-        #
-        # self.log_std = nnx.Param(jnp.zeros(out_features))
-        #
-        # self.cri_dense1 = nnx.Linear(in_features, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
-        # self.cri_dense2 = nnx.Linear(64, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
-        # self.cri_dense3 = nnx.Linear(64, 1, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
-
-    def __call__(self, x):
-
-        if self.normalize:
-            x = self.norm_layer(x)
-
-        actor_mean = x
-        for layer in self.act_layers:
-            actor_mean = layer(actor_mean)
-
-        pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(self.log_std.value))
-
-        critic = x
-        for layer in self.cri_layers:
-            critic = layer(critic)
-
-        return pi, jnp.squeeze(critic, axis=-1)
-
+# class ActorCritic(nnx.Module):
+#     def __init__(self, in_features: int, out_features: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, add_logistic_to_actor: bool = False, normalize: bool = False, is_feature_normalizable: Sequence[bool] = None):
+#
+#         if act_net_arch is None:
+#             if net_arch is None:
+#                 raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
+#             act_net_arch = net_arch
+#         if cri_net_arch is None:
+#             if net_arch is None:
+#                 raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
+#             cri_net_arch = net_arch
+#
+#         act_net_arch = list(act_net_arch)
+#         cri_net_arch = list(cri_net_arch)
+#
+#         self.normalize = normalize
+#         if normalize:
+#             print('norm batt')
+#             # self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
+#             self.norm_layer = RunningNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
+#
+#         activation = utils.activation_from_name(activation)
+#
+#         act_net_arch = [in_features] + act_net_arch + [out_features]
+#
+#         self.act_layers = []
+#         for i in range(len(act_net_arch) - 2):
+#             self.act_layers.append(nnx.Linear(act_net_arch[i], act_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+#             self.act_layers.append(activation)
+#         self.act_layers.append(nnx.Linear(act_net_arch[-2], act_net_arch[-1], kernel_init=orthogonal(0.1), bias_init=constant(0.), rngs=rngs))
+#         if add_logistic_to_actor:
+#             self.act_layers.append(nnx.sigmoid)
+#
+#         self.log_std = nnx.Param(jnp.zeros(out_features))# - 1.)
+#
+#         cri_net_arch = [in_features] + cri_net_arch + [1]
+#
+#         self.cri_layers = []
+#         for i in range(len(cri_net_arch) - 2):
+#             self.cri_layers.append(nnx.Linear(cri_net_arch[i], cri_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+#             self.cri_layers.append(activation)
+#         self.cri_layers.append(nnx.Linear(cri_net_arch[-2], cri_net_arch[-1], kernel_init=orthogonal(1.), bias_init=constant(0.), rngs=rngs))
+#
+#         # self.act_dense1 = nnx.Linear(in_features, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
+#         # self.act_dense2 = nnx.Linear(64, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
+#         # self.act_dense3 = nnx.Linear(64, out_features, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
+#         #
+#         # self.log_std = nnx.Param(jnp.zeros(out_features))
+#         #
+#         # self.cri_dense1 = nnx.Linear(in_features, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
+#         # self.cri_dense2 = nnx.Linear(64, 64, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
+#         # self.cri_dense3 = nnx.Linear(64, 1, kernel_init=glorot_normal(), bias_init=constant(0.), rngs=rngs)
+#
+#     def __call__(self, x):
+#
+#         if self.normalize:
+#             x = self.norm_layer(x)
+#
+#         actor_mean = x
+#         for layer in self.act_layers:
+#             actor_mean = layer(actor_mean)
+#
+#         pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(self.log_std.value))
+#
+#         critic = x
+#         for layer in self.cri_layers:
+#             critic = layer(critic)
+#
+#         return pi, jnp.squeeze(critic, axis=-1)
+#
 
 class Transition(NamedTuple):
     done: jnp.ndarray

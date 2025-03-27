@@ -13,6 +13,7 @@ import optax
 from typing import Sequence, NamedTuple, Any
 import distrax
 
+from algorithms.normalization_custom import RunningNorm
 import algorithms.utils as utils
 from ernestogym.envs_jax.single_agent.env import  MicroGridEnv
 
@@ -26,206 +27,206 @@ from .wrappers import (
     ClipAction,
 )
 
-class RecurrentActorCritic(nnx.Module):
-    def __init__(self, in_features: int, out_features: int, activation: str, rngs,
-                 num_sequences: int,
-                 lstm_net_arch: Sequence[int]=None, lstm_act_net_arch: Sequence[int]=None, lstm_cri_net_arch: Sequence[int]=None, lstm_activation: str=None,
-                 net_arch: Sequence[int]=None, act_net_arch: Sequence[int]=None, cri_net_arch: Sequence[int]=None,
-                 add_logistic_to_actor: bool = False, normalize:bool=False
-                 ):
-
-        if act_net_arch is None:
-            if net_arch is None:
-                raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
-            act_net_arch = net_arch
-        if cri_net_arch is None:
-            if net_arch is None:
-                raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
-            cri_net_arch = net_arch
-
-        if lstm_act_net_arch is None:
-            if lstm_net_arch is None:
-                raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
-            lstm_act_net_arch = lstm_net_arch
-        if lstm_cri_net_arch is None:
-            if lstm_net_arch is None:
-                raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
-            lstm_cri_net_arch = lstm_net_arch
-
-        self.normalize = normalize
-        if self.normalize:
-            self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
-
-        activation = self.activation_from_name(activation)
-
-        if lstm_activation is None:
-            lstm_activation = activation
-        else:
-            lstm_activation = self.activation_from_name(lstm_activation)
-
-
-        self.num_sequences = num_sequences
-
-        lstm_act_net_arch = [num_sequences] + list(lstm_act_net_arch)
-
-        self.lstm_act_layers = []
-        for i in range(len(lstm_act_net_arch) - 1):
-            self.lstm_act_layers.append(nnx.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
-
-        lstm_cri_net_arch = [num_sequences] + list(lstm_cri_net_arch)
-
-        self.lstm_cri_layers = []
-        for i in range(len(lstm_cri_net_arch) - 1):
-            self.lstm_cri_layers.append(nnx.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
-
-        num_non_sequences = in_features - num_sequences
-
-        act_net_arch = list(act_net_arch)
-        cri_net_arch = list(cri_net_arch)
-
-        act_net_arch = [num_non_sequences + lstm_act_net_arch[-1]] + act_net_arch + [out_features]
-
-        self.act_layers = []
-        for i in range(len(act_net_arch) - 2):
-            self.act_layers.append(nnx.Linear(act_net_arch[i], act_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-            self.act_layers.append(activation)
-        self.act_layers.append(nnx.Linear(act_net_arch[-2], act_net_arch[-1], kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
-        if add_logistic_to_actor:
-            self.act_layers.append(nnx.sigmoid)
-
-        self.log_std = nnx.Param(jnp.zeros(out_features))
-
-        cri_net_arch = [num_non_sequences + lstm_cri_net_arch[-1]] + cri_net_arch + [1]
-
-        self.cri_layers = []
-        for i in range(len(cri_net_arch) - 2):
-            self.cri_layers.append(nnx.Linear(cri_net_arch[i], cri_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-            self.cri_layers.append(activation)
-        self.cri_layers.append(nnx.Linear(cri_net_arch[-2], cri_net_arch[-1], kernel_init=orthogonal(1.), bias_init=constant(0.), rngs=rngs))
-
-    def __call__(self, x, lstm_act_state, lstm_cri_state):
-
-        x = self.normalize_input(x)
-
-        lstm_act_state, act_output = self.apply_lstm_act(x, lstm_act_state)
-        pi = self.apply_act_mlp(x, act_output)
-
-        lstm_cri_state, cri_output = self.apply_lstm_cri(x, lstm_cri_state)
-        critic = self.apply_cri_mlp(x, cri_output)
-
-        return pi, critic, lstm_act_state, lstm_cri_state
-
-    def normalize_input(self, x):
-        if self.normalize:
-            return self.norm_layer(x)
-        else:
-            return x
-
-    def apply_lstm_act(self, x, lstm_act_prev_state):
-        seq = jax.lax.slice_in_dim(x, 0, self.num_sequences, axis=-1)
-        states = ()
-        inputs = seq
-        for i in range(len(self.lstm_act_layers)):
-            val = self.lstm_act_layers[i](lstm_act_prev_state[i], inputs)
-            state, output = val
-            states = states + (state,)
-            inputs = output
-        return states, inputs
-
-    def apply_lstm_cri(self, x, lstm_cri_prev_state):
-        seq = jax.lax.slice_in_dim(x, 0, self.num_sequences, axis=-1)
-        states = ()
-        inputs = seq
-        for i in range(len(self.lstm_cri_layers)):
-            state, output = self.lstm_cri_layers[i](lstm_cri_prev_state[i], inputs)
-            states = states + (state,)
-            inputs = output
-        return states, inputs
-
-    def apply_lstms_to_sequence(self, x, is_start_of_episode, lstm_act_state, lstm_cri_state, init_states):
-        seq = jax.lax.slice_in_dim(x, 0, self.num_sequences, axis=-1)
-
-        def lstms_step(lstm_states, data):
-            obs, start = data
-            lstm_act_state, lstm_cri_state = jax.lax.cond(start, lambda: init_states, lambda: lstm_states)
-            states = ()
-            input = obs
-            for i in range(len(self.lstm_act_layers)):
-                state, output = self.lstm_act_layers[i](lstm_act_state[i], input)
-                states = states + (state,)
-                input = output
-            output_act = input
-            lstm_act_state = states
-
-            states = ()
-            input = obs
-            for i in range(len(self.lstm_cri_layers)):
-                state, output = self.lstm_cri_layers[i](lstm_cri_state[i], input)
-                states = states + (state,)
-                input = output
-            output_cri = input
-            lstm_cri_state = states
-
-            return (lstm_act_state, lstm_cri_state), (output_act, output_cri)
-
-        states, outputs = jax.lax.scan(lstms_step, (lstm_act_state, lstm_cri_state), (seq, is_start_of_episode))
-
-        return  states, outputs
-
-
-
-    def apply_act_mlp(self, x, lstm_act_output):
-        non_seq = jax.lax.slice_in_dim(x, self.num_sequences, x.shape[-1], axis=-1)
-        actor_mean = jnp.concat([lstm_act_output, non_seq], axis=-1)
-
-        for layer in self.act_layers:
-            actor_mean = layer(actor_mean)
-
-        pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(jnp.asarray(self.log_std)))
-
-        return pi
-
-    def apply_cri_mlp(self, x, lstm_cri_output):
-        non_seq = jax.lax.slice_in_dim(x, self.num_sequences, x.shape[-1], axis=-1)
-        critic = jnp.concat([lstm_cri_output, non_seq], axis=-1)
-
-        for layer in self.cri_layers:
-            critic = layer(critic)
-
-        return jnp.squeeze(critic, axis=-1)
-
-    def get_initial_lstm_state(self):
-        init_act_state = ()
-        inp_dim = self.num_sequences
-        for layer in self.lstm_act_layers:
-            init_act_state += (layer.initialize_carry((inp_dim,)),)
-            inp_dim = layer.hidden_features
-
-        init_cri_state = ()
-        inp_dim = self.num_sequences
-        for layer in self.lstm_cri_layers:
-            init_cri_state += (layer.initialize_carry((inp_dim,)),)
-            inp_dim = layer.hidden_features
-
-        return init_act_state, init_cri_state
-
-    @classmethod
-    def activation_from_name(cls, name:str):
-        name = name.lower()
-        if name == 'relu':
-            return nnx.relu
-        elif name == 'tanh':
-            return nnx.tanh
-        elif name == 'sigmoid':
-            return nnx.sigmoid
-        elif name == 'leaky_relu':
-            return nnx.leaky_relu
-        elif name == 'swish':
-            return nnx.swish
-        elif name == 'elu':
-            return nnx.elu
-        else:
-            raise ValueError("'activation' must be 'relu' or 'tanh'")
+# class RecurrentActorCritic(nnx.Module):
+#     def __init__(self, in_features: int, out_features: int, activation: str, rngs,
+#                  num_sequences: int,
+#                  lstm_net_arch: Sequence[int]=None, lstm_act_net_arch: Sequence[int]=None, lstm_cri_net_arch: Sequence[int]=None, lstm_activation: str=None,
+#                  net_arch: Sequence[int]=None, act_net_arch: Sequence[int]=None, cri_net_arch: Sequence[int]=None,
+#                  add_logistic_to_actor: bool = False, normalize:bool=False, is_feature_normalizable: Sequence[bool] = None
+#                  ):
+#
+#         if act_net_arch is None:
+#             if net_arch is None:
+#                 raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
+#             act_net_arch = net_arch
+#         if cri_net_arch is None:
+#             if net_arch is None:
+#                 raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
+#             cri_net_arch = net_arch
+#
+#         if lstm_act_net_arch is None:
+#             if lstm_net_arch is None:
+#                 raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
+#             lstm_act_net_arch = lstm_net_arch
+#         if lstm_cri_net_arch is None:
+#             if lstm_net_arch is None:
+#                 raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
+#             lstm_cri_net_arch = lstm_net_arch
+#
+#         self.normalize = normalize
+#         if self.normalize:
+#             self.norm_layer = RunningNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
+#
+#         activation = self.activation_from_name(activation)
+#
+#         if lstm_activation is None:
+#             lstm_activation = activation
+#         else:
+#             lstm_activation = self.activation_from_name(lstm_activation)
+#
+#
+#         self.num_sequences = num_sequences
+#
+#         lstm_act_net_arch = [num_sequences] + list(lstm_act_net_arch)
+#
+#         self.lstm_act_layers = []
+#         for i in range(len(lstm_act_net_arch) - 1):
+#             self.lstm_act_layers.append(nnx.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+#
+#         lstm_cri_net_arch = [num_sequences] + list(lstm_cri_net_arch)
+#
+#         self.lstm_cri_layers = []
+#         for i in range(len(lstm_cri_net_arch) - 1):
+#             self.lstm_cri_layers.append(nnx.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+#
+#         num_non_sequences = in_features - num_sequences
+#
+#         act_net_arch = list(act_net_arch)
+#         cri_net_arch = list(cri_net_arch)
+#
+#         act_net_arch = [num_non_sequences + lstm_act_net_arch[-1]] + act_net_arch + [out_features]
+#
+#         self.act_layers = []
+#         for i in range(len(act_net_arch) - 2):
+#             self.act_layers.append(nnx.Linear(act_net_arch[i], act_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+#             self.act_layers.append(activation)
+#         self.act_layers.append(nnx.Linear(act_net_arch[-2], act_net_arch[-1], kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
+#         if add_logistic_to_actor:
+#             self.act_layers.append(nnx.sigmoid)
+#
+#         self.log_std = nnx.Param(jnp.zeros(out_features))
+#
+#         cri_net_arch = [num_non_sequences + lstm_cri_net_arch[-1]] + cri_net_arch + [1]
+#
+#         self.cri_layers = []
+#         for i in range(len(cri_net_arch) - 2):
+#             self.cri_layers.append(nnx.Linear(cri_net_arch[i], cri_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+#             self.cri_layers.append(activation)
+#         self.cri_layers.append(nnx.Linear(cri_net_arch[-2], cri_net_arch[-1], kernel_init=orthogonal(1.), bias_init=constant(0.), rngs=rngs))
+#
+#     def __call__(self, x, lstm_act_state, lstm_cri_state):
+#
+#         x = self.normalize_input(x)
+#
+#         lstm_act_state, act_output = self.apply_lstm_act(x, lstm_act_state)
+#         pi = self.apply_act_mlp(x, act_output)
+#
+#         lstm_cri_state, cri_output = self.apply_lstm_cri(x, lstm_cri_state)
+#         critic = self.apply_cri_mlp(x, cri_output)
+#
+#         return pi, critic, lstm_act_state, lstm_cri_state
+#
+#     def normalize_input(self, x):
+#         if self.normalize:
+#             return self.norm_layer(x)
+#         else:
+#             return x
+#
+#     def apply_lstm_act(self, x, lstm_act_prev_state):
+#         seq = jax.lax.slice_in_dim(x, 0, self.num_sequences, axis=-1)
+#         states = ()
+#         inputs = seq
+#         for i in range(len(self.lstm_act_layers)):
+#             val = self.lstm_act_layers[i](lstm_act_prev_state[i], inputs)
+#             state, output = val
+#             states = states + (state,)
+#             inputs = output
+#         return states, inputs
+#
+#     def apply_lstm_cri(self, x, lstm_cri_prev_state):
+#         seq = jax.lax.slice_in_dim(x, 0, self.num_sequences, axis=-1)
+#         states = ()
+#         inputs = seq
+#         for i in range(len(self.lstm_cri_layers)):
+#             state, output = self.lstm_cri_layers[i](lstm_cri_prev_state[i], inputs)
+#             states = states + (state,)
+#             inputs = output
+#         return states, inputs
+#
+#     def apply_lstms_to_sequence(self, x, is_start_of_episode, lstm_act_state, lstm_cri_state, init_states):
+#         seq = jax.lax.slice_in_dim(x, 0, self.num_sequences, axis=-1)
+#
+#         def lstms_step(lstm_states, data):
+#             obs, start = data
+#             lstm_act_state, lstm_cri_state = jax.lax.cond(start, lambda: init_states, lambda: lstm_states)
+#             states = ()
+#             input = obs
+#             for i in range(len(self.lstm_act_layers)):
+#                 state, output = self.lstm_act_layers[i](lstm_act_state[i], input)
+#                 states = states + (state,)
+#                 input = output
+#             output_act = input
+#             lstm_act_state = states
+#
+#             states = ()
+#             input = obs
+#             for i in range(len(self.lstm_cri_layers)):
+#                 state, output = self.lstm_cri_layers[i](lstm_cri_state[i], input)
+#                 states = states + (state,)
+#                 input = output
+#             output_cri = input
+#             lstm_cri_state = states
+#
+#             return (lstm_act_state, lstm_cri_state), (output_act, output_cri)
+#
+#         states, outputs = jax.lax.scan(lstms_step, (lstm_act_state, lstm_cri_state), (seq, is_start_of_episode))
+#
+#         return  states, outputs
+#
+#
+#
+#     def apply_act_mlp(self, x, lstm_act_output):
+#         non_seq = jax.lax.slice_in_dim(x, self.num_sequences, x.shape[-1], axis=-1)
+#         actor_mean = jnp.concat([lstm_act_output, non_seq], axis=-1)
+#
+#         for layer in self.act_layers:
+#             actor_mean = layer(actor_mean)
+#
+#         pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(jnp.asarray(self.log_std)))
+#
+#         return pi
+#
+#     def apply_cri_mlp(self, x, lstm_cri_output):
+#         non_seq = jax.lax.slice_in_dim(x, self.num_sequences, x.shape[-1], axis=-1)
+#         critic = jnp.concat([lstm_cri_output, non_seq], axis=-1)
+#
+#         for layer in self.cri_layers:
+#             critic = layer(critic)
+#
+#         return jnp.squeeze(critic, axis=-1)
+#
+#     def get_initial_lstm_state(self):
+#         init_act_state = ()
+#         inp_dim = self.num_sequences
+#         for layer in self.lstm_act_layers:
+#             init_act_state += (layer.initialize_carry((inp_dim,)),)
+#             inp_dim = layer.hidden_features
+#
+#         init_cri_state = ()
+#         inp_dim = self.num_sequences
+#         for layer in self.lstm_cri_layers:
+#             init_cri_state += (layer.initialize_carry((inp_dim,)),)
+#             inp_dim = layer.hidden_features
+#
+#         return init_act_state, init_cri_state
+#
+#     @classmethod
+#     def activation_from_name(cls, name:str):
+#         name = name.lower()
+#         if name == 'relu':
+#             return nnx.relu
+#         elif name == 'tanh':
+#             return nnx.tanh
+#         elif name == 'sigmoid':
+#             return nnx.sigmoid
+#         elif name == 'leaky_relu':
+#             return nnx.leaky_relu
+#         elif name == 'swish':
+#             return nnx.swish
+#         elif name == 'elu':
+#             return nnx.elu
+#         else:
+#             raise ValueError("'activation' must be 'relu' or 'tanh'")
 
 
 
@@ -539,9 +540,11 @@ def train(env, env_params, config, train_state, rng, validate=True, freq_val=Non
                     #
                     # # print(jax.tree.map(lambda x: x[0].shape, (traj_batch.lstm_states_prev.act_state, traj_batch.lstm_states_prev.act_state)))
                     #
+
+                    normalized_obs = network.normalize_input(traj_batch.obs)
                     _, lstm_output = jax.lax.scan(forward_pass_lstm,
                                                   jax.tree.map(lambda x: x[0], (traj_batch.lstm_states_prev.act_state, traj_batch.lstm_states_prev.cri_state)),
-                                                  (traj_batch.obs, traj_batch.done_prev),
+                                                  (normalized_obs, traj_batch.done_prev),
                                                   unroll=16)
 
                     # prev_act_state, prev_cri_state = jax.tree.map(
@@ -562,8 +565,8 @@ def train(env, env_params, config, train_state, rng, validate=True, freq_val=Non
 
                     # lstm_output_act, lstm_output_cri = lstm_output
                     #
-                    pi = network.apply_act_mlp(traj_batch.obs, act_outputs)
-                    values = network.apply_cri_mlp(traj_batch.obs, cri_outputs)
+                    pi = network.apply_act_mlp(normalized_obs, act_outputs)
+                    values = network.apply_cri_mlp(normalized_obs, cri_outputs)
 
                     log_prob = pi.log_prob(traj_batch.action)
 

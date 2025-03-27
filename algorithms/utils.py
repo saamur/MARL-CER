@@ -11,13 +11,12 @@ import flax.nnx as nnx
 import pickle
 import lzma
 
-import algorithms.ppo as ppo
-import algorithms.recurrent_ppo_wo_normalization as recurrent_ppo
-import algorithms.multi_agent_ppo_only_actor_critic as multi_agent_ppo_only_actor_critic
-import algorithms.multi_agent_ppo as multi_agent_ppo
+from algorithms.networks import (ActorCritic, RecurrentActorCritic, StackedActorCritic,
+                                 StackedRecurrentActorCritic,
+                                 RECActorCritic, RECRecurrentActorCritic)
 
 
-path_base = '/media/samuele/Disco/PycharmProjectsUbuntu/MARL-CER/trained_agents/'
+path_base = '/trained_agents/'
 
 
 def activation_from_name(name: str):
@@ -39,7 +38,7 @@ def activation_from_name(name: str):
 
 def construct_net_from_config(config, rng):
     if config['NETWORK'] == 'actor_critic':
-        return ppo.ActorCritic(
+        return ActorCritic(
             config["OBSERVATION_SPACE_SIZE"],
             config["ACTION_SPACE_SIZE"],
             activation=config["ACTIVATION"],
@@ -50,7 +49,7 @@ def construct_net_from_config(config, rng):
             rngs=rng
         )
     elif config['NETWORK'] == 'recurrent_actor_critic':
-        return recurrent_ppo.RecurrentActorCritic(
+        return RecurrentActorCritic(
             config["OBSERVATION_SPACE_SIZE"],
             config["ACTION_SPACE_SIZE"],
             num_sequences=config["NUM_SEQUENCES"],
@@ -68,26 +67,29 @@ def construct_net_from_config(config, rng):
     else:
         raise ValueError('Invalid network name')
 
-def construct_battery_net_from_config_multi_agent_only_actor_critic(config, rng):
+# def construct_battery_net_from_config_multi_agent_only_actor_critic(config, rng):
+#
+#     @nnx.split_rngs(splits=config['NUM_BATTERY_AGENTS'])
+#     def thing(rng):
+#         return StackedActorCritic(
+#             config["BATTERY_OBSERVATION_SPACE_SIZE"],
+#             config["BATTERY_ACTION_SPACE_SIZE"],
+#             activation=config["ACTIVATION"],
+#             net_arch=config.get("NET_ARCH"),
+#             act_net_arch=config.get("ACT_NET_ARCH"),
+#             cri_net_arch=config.get("CRI_NET_ARCH"),
+#             add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
+#             rngs=rng)
+#     return thing(rng)
 
-    @nnx.split_rngs(splits=config['NUM_BATTERY_AGENTS'])
-    def thing(rng):
-        return multi_agent_ppo_only_actor_critic.StackedActorCritic(
-            config["BATTERY_OBSERVATION_SPACE_SIZE"],
-            config["BATTERY_ACTION_SPACE_SIZE"],
-            activation=config["ACTIVATION"],
-            net_arch=config.get("NET_ARCH"),
-            act_net_arch=config.get("ACT_NET_ARCH"),
-            cri_net_arch=config.get("CRI_NET_ARCH"),
-            add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
-            rngs=rng)
-    return thing(rng)
+def construct_battery_net_from_config_multi_agent(config, rng, num_nets=None):
 
-def construct_battery_net_from_config_multi_agent(config, rng):
+    if num_nets is None:
+        num_nets = config['NUM_BATTERY_AGENTS']
 
     if config['NETWORK_TYPE_BATTERIES'] == 'actor_critic':
-        return multi_agent_ppo.StackedActorCritic(
-            config['NUM_BATTERY_AGENTS'],
+        return StackedActorCritic(
+            num_nets,
             config["BATTERY_OBSERVATION_SPACE_SIZE"],
             config["BATTERY_ACTION_SPACE_SIZE"],
             activation=config["ACTIVATION"],
@@ -96,10 +98,11 @@ def construct_battery_net_from_config_multi_agent(config, rng):
             cri_net_arch=config.get("CRI_NET_ARCH"),
             add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
             normalize=config["NORMALIZE_NN_INPUTS"],
+            # is_feature_normalizable=config['BATTERY_OBS_IS_NORMALIZABLE'],
             rngs=rng)
     elif config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
-        return multi_agent_ppo.StackedRecurrentActorCritic(
-            config['NUM_BATTERY_AGENTS'],
+        return StackedRecurrentActorCritic(
+            num_nets,
             config["BATTERY_OBSERVATION_SPACE_SIZE"],
             config["BATTERY_ACTION_SPACE_SIZE"],
             num_sequences=config["BATTERY_NUM_SEQUENCES"],
@@ -113,49 +116,54 @@ def construct_battery_net_from_config_multi_agent(config, rng):
             lstm_cri_net_arch=config.get("LSTM_CRI_NET_ARCH"),
             add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
             normalize=config["NORMALIZE_NN_INPUTS"],
+            # is_feature_normalizable=config['BATTERY_OBS_IS_NORMALIZABLE'],
             rngs=rng
     )
     else:
         raise ValueError('Invalid network name')
 
 def construct_rec_net_from_config_multi_agent_only_actor_critic(config, rng):
-    return multi_agent_ppo_only_actor_critic.RECActorCritic(config["REC_INPUT_NETWORK_SIZE"],
-                                                            config['NUM_BATTERY_AGENTS'],
-                                                            config['ACTIVATION'],
-                                                            rngs=rng,
-                                                            net_arch=config.get("NET_ARCH"),
-                                                            act_net_arch=config.get("ACT_NET_ARCH"),
-                                                            cri_net_arch=config.get("CRI_NET_ARCH"),
-                                                            passive_houses=config['PASSIVE_HOUSES'])
+    return RECActorCritic(config["REC_INPUT_NETWORK_SIZE"],
+                          config['NUM_BATTERY_AGENTS'],
+                          config['ACTIVATION'],
+                          rngs=rng,
+                          net_arch=config.get("NET_ARCH"),
+                          act_net_arch=config.get("ACT_NET_ARCH"),
+                          cri_net_arch=config.get("CRI_NET_ARCH"),
+                          passive_houses=config['PASSIVE_HOUSES'])
 
 def construct_rec_net_from_config_multi_agent(config, rng):
     if config['NETWORK_TYPE_REC'] == 'actor_critic':
-        return multi_agent_ppo.RECActorCritic(config['REC_OBS_KEYS'],
-                                              config['REC_OBS_IS_LOCAL'],
-                                              config['NUM_BATTERY_AGENTS'],
-                                              config['ACTIVATION'],
-                                              rngs=rng,
-                                              net_arch=config.get("NET_ARCH"),
-                                              act_net_arch=config.get("ACT_NET_ARCH"),
-                                              cri_net_arch=config.get("CRI_NET_ARCH"),
-                                              passive_houses=config['PASSIVE_HOUSES'],
-                                              normalize=config["NORMALIZE_NN_INPUTS"])
+        return RECActorCritic(config['REC_OBS_KEYS'],
+                              config['REC_OBS_IS_LOCAL'],
+                              config['NUM_BATTERY_AGENTS'],
+                              config['ACTIVATION'],
+                              rngs=rng,
+                              net_arch=config.get("NET_ARCH"),
+                              act_net_arch=config.get("ACT_NET_ARCH"),
+                              cri_net_arch=config.get("CRI_NET_ARCH"),
+                              passive_houses=config['PASSIVE_HOUSES'],
+                              normalize=config["NORMALIZE_NN_INPUTS"],
+                              # is_obs_normalizable=config['REC_OBS_IS_NORMALIZABLE']
+                              )
     elif config['NETWORK_TYPE_REC'] == 'recurrent_actor_critic':
-        return multi_agent_ppo.RECRecurrentActorCritic(config['REC_OBS_KEYS'],
-                                                       config['REC_OBS_IS_LOCAL'],
-                                                       config['REC_OBS_IS_SEQUENCE'],
-                                                       config['NUM_BATTERY_AGENTS'],
-                                                       config['ACTIVATION'],
-                                                       rngs=rng,
-                                                       net_arch=config.get("NET_ARCH"),
-                                                       act_net_arch=config.get("ACT_NET_ARCH"),
-                                                       cri_net_arch=config.get("CRI_NET_ARCH"),
-                                                       lstm_net_arch=config.get("LSTM_NET_ARCH"),
-                                                       lstm_act_net_arch=config.get("LSTM_ACT_NET_ARCH"),
-                                                       lstm_cri_net_arch=config.get("LSTM_CRI_NET_ARCH"),
-                                                       lstm_activation=config["LSTM_ACTIVATION"],
-                                                       passive_houses=config['PASSIVE_HOUSES'],
-                                                       normalize=config["NORMALIZE_NN_INPUTS"])
+        return RECRecurrentActorCritic(config['REC_OBS_KEYS'],
+                                       config['REC_OBS_IS_LOCAL'],
+                                       config['REC_OBS_IS_SEQUENCE'],
+                                       config['NUM_BATTERY_AGENTS'],
+                                       config['ACTIVATION'],
+                                       rngs=rng,
+                                       net_arch=config.get("NET_ARCH"),
+                                       act_net_arch=config.get("ACT_NET_ARCH"),
+                                       cri_net_arch=config.get("CRI_NET_ARCH"),
+                                       lstm_net_arch=config.get("LSTM_NET_ARCH"),
+                                       lstm_act_net_arch=config.get("LSTM_ACT_NET_ARCH"),
+                                       lstm_cri_net_arch=config.get("LSTM_CRI_NET_ARCH"),
+                                       lstm_activation=config["LSTM_ACTIVATION"],
+                                       passive_houses=config['PASSIVE_HOUSES'],
+                                       normalize=config["NORMALIZE_NN_INPUTS"],
+                                       # is_obs_normalizable=config['REC_OBS_IS_NORMALIZABLE']
+                                       )
     else:
         raise ValueError('Invalid network name')
 
@@ -303,7 +311,7 @@ def restore_state_multi_agent(path):
     with lzma.open(path + '/params.xz', 'rb') as file:
         params = pickle.load(file)
 
-    network_batteries_shape = construct_battery_net_from_config_multi_agent(config, nnx.Rngs(0))
+    network_batteries_shape = construct_battery_net_from_config_multi_agent(config, nnx.Rngs(0), num_nets=config.get('NUM_RL_AGENTS'))
     graphdef_batteries, abstract_batteries_state = nnx.split(network_batteries_shape)
 
     with lzma.open(path + '/state_batteries.xz', 'rb') as file:

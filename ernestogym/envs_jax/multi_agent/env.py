@@ -200,6 +200,7 @@ class RECEnv(MultiAgentEnv):
         self.battery_obs_space['buying_price'] = {'low': 0., 'high': jnp.inf}
         self.battery_obs_space['selling_price'] = {'low': 0., 'high': jnp.inf}
         obs_is_sequence = [True, True, True, True, True, True]
+        self.obs_is_normalizable_battery = [True, False, True, True, True, True]
 
         # for a in self.battery_agents:
         #     self.observation_spaces[a]['temperature'] = spaces.Box(low=250., high=400., shape=(1,))
@@ -215,6 +216,7 @@ class RECEnv(MultiAgentEnv):
             self._obs_battery_agents_keys.append('soh')
             self.battery_obs_space['soh'] = {'low': 0., 'high': 1.}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable_battery.append(False)
 
         if 'day_of_year' in settings['battery_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
@@ -224,6 +226,8 @@ class RECEnv(MultiAgentEnv):
             self.battery_obs_space['cos_day_of_year'] = {'low': -1, 'high': 1}
             obs_is_sequence.append(False)
             obs_is_sequence.append(False)
+            self.obs_is_normalizable_battery.append(False)
+            self.obs_is_normalizable_battery.append(False)
 
         if 'seconds_of_day' in settings['battery_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
@@ -233,6 +237,8 @@ class RECEnv(MultiAgentEnv):
             self.battery_obs_space['cos_seconds_of_day'] = {'low': -1, 'high': 1}
             obs_is_sequence.append(False)
             obs_is_sequence.append(False)
+            self.obs_is_normalizable_battery.append(False)
+            self.obs_is_normalizable_battery.append(False)
 
         # if 'energy_level' in settings['battery_obs']:
         #     self._obs_battery_agents_keys.append('energy_level')
@@ -246,20 +252,24 @@ class RECEnv(MultiAgentEnv):
             self._obs_battery_agents_keys.append('network_REC_plus')
             self.battery_obs_space['network_REC_plus'] = {'low': 0, 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable_battery.append(True)
 
         if 'network_REC_minus' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_minus')
             self.battery_obs_space['network_REC_minus'] = {'low': 0, 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable_battery.append(True)
 
         if 'network_REC_diff' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_diff')
             self.battery_obs_space['network_REC_diff'] = {'low': -jnp.inf, 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_normalizable_battery.append(True)
 
         indices = np.argsort(np.logical_not(obs_is_sequence))
 
         self._obs_battery_agents_keys = [self._obs_battery_agents_keys[i] for i in indices]
+        self.obs_is_normalizable_battery = [self.obs_is_normalizable_battery[i] for i in indices]
 
         self.num_battery_obs_sequences = np.sum(obs_is_sequence)
 
@@ -270,11 +280,11 @@ class RECEnv(MultiAgentEnv):
                                                               shape=(len(self._obs_battery_agents_keys),)))
                                                for a in self.battery_agents])
 
-
-
+        print(self._obs_battery_agents_keys)
 
 
         self._obs_rec_keys = ['demands_base_battery_houses', 'demands_battery_battery_houses', 'generations_battery_houses']
+
         self.obs_is_sequence_rec = {'demands_base_battery_houses':True,
                                     'demands_battery_battery_houses':True,
                                     'generations_battery_houses':True}
@@ -282,6 +292,11 @@ class RECEnv(MultiAgentEnv):
         self.obs_is_local_rec = {'demands_base_battery_houses':True,
                                  'demands_battery_battery_houses':True,
                                  'generations_battery_houses':True}
+
+        self.obs_is_normalizable_rec = {'demands_base_battery_houses': True,
+                                        'demands_battery_battery_houses': True,
+                                        'generations_battery_houses': True}
+
 
         rec_obs_space = {'demands_base_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,)),
                          'demands_battery_battery_houses': spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,)),
@@ -293,47 +308,55 @@ class RECEnv(MultiAgentEnv):
                 rec_obs_space['demands_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
                 self.obs_is_sequence_rec['demands_passive_houses'] = True
                 self.obs_is_local_rec['demands_passive_houses'] = True
+                self.obs_is_normalizable_rec['demands_passive_houses'] = True
             if 'generations_passive_houses' in settings['rec_obs']:
                 self._obs_rec_keys.append('generations_passive_houses')
                 rec_obs_space['generations_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
                 self.obs_is_sequence_rec['generations_passive_houses'] = True
                 self.obs_is_local_rec['generations_passive_houses'] = True
+                self.obs_is_normalizable_rec['generations_passive_houses'] = True
 
         if 'tot_demands_base' in settings['rec_obs']:
             self._obs_rec_keys.append('tot_demands_base')
             rec_obs_space['tot_demands_base'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['tot_demands_base'] = True
             self.obs_is_local_rec['tot_demands_base'] = False
+            self.obs_is_normalizable_rec['tot_demands_base'] = True
 
         if 'tot_demands_batteries' in settings['rec_obs']:
             self._obs_rec_keys.append('tot_demands_batteries')
             rec_obs_space['tot_demands_batteries'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['tot_demands_batteries'] = True
             self.obs_is_local_rec['tot_demands_batteries'] = False
+            self.obs_is_normalizable_rec['tot_demands_batteries'] = True
 
         if 'tot_generations' in settings['rec_obs']:
             self._obs_rec_keys.append('tot_generations')
             rec_obs_space['tot_generations'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['tot_generations'] = True
             self.obs_is_local_rec['tot_generations'] = False
+            self.obs_is_normalizable_rec['tot_generations'] = True
 
         if 'mean_demands_base' in settings['rec_obs']:
             self._obs_rec_keys.append('mean_demands_base')
             rec_obs_space['mean_demands_base'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['mean_demands_base'] = True
             self.obs_is_local_rec['mean_demands_base'] = False
+            self.obs_is_normalizable_rec['mean_demands_base'] = True
 
         if 'mean_demands_batteries' in settings['rec_obs']:
             self._obs_rec_keys.append('mean_demands_batteries')
             rec_obs_space['mean_demands_batteries'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['mean_demands_batteries'] = True
             self.obs_is_local_rec['mean_demands_batteries'] = False
+            self.obs_is_normalizable_rec['mean_demands_batteries'] = True
 
         if 'mean_generations' in settings['rec_obs']:
             self._obs_rec_keys.append('mean_generations')
             rec_obs_space['mean_generations'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['mean_generations'] = True
             self.obs_is_local_rec['mean_generations'] = False
+            self.obs_is_normalizable_rec['mean_generations'] = True
 
         if 'day_of_year' in settings['rec_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
@@ -343,6 +366,7 @@ class RECEnv(MultiAgentEnv):
             rec_obs_space['cos_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
             self.obs_is_sequence_rec.update({'sin_day_of_year': False, 'cos_day_of_year': False})
             self.obs_is_local_rec.update({'sin_day_of_year': False, 'cos_day_of_year': False})
+            self.obs_is_normalizable_rec.update({'sin_day_of_year': False, 'cos_day_of_year': False})
         if 'seconds_of_day' in settings['rec_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
             self._obs_rec_keys.append('sin_seconds_of_day')
@@ -351,38 +375,46 @@ class RECEnv(MultiAgentEnv):
             rec_obs_space['cos_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
             self.obs_is_sequence_rec.update({'sin_seconds_of_day': False, 'cos_seconds_of_day': False})
             self.obs_is_local_rec.update({'sin_seconds_of_day': False, 'cos_seconds_of_day': False})
+            self.obs_is_normalizable_rec.update({'sin_seconds_of_day': False, 'cos_seconds_of_day': False})
 
         if 'network_REC_plus' in settings['rec_obs']:
             self._obs_rec_keys.append('network_REC_plus')
             rec_obs_space['network_REC_plus'] = {'low': 0, 'high': jnp.inf}
             self.obs_is_sequence_rec['network_REC_plus'] = True
             self.obs_is_local_rec['network_REC_plus'] = False
+            self.obs_is_normalizable_rec['network_REC_plus'] = True
 
         if 'network_REC_minus' in settings['rec_obs']:
             self._obs_rec_keys.append('network_REC_minus')
             rec_obs_space['network_REC_minus'] = {'low': 0, 'high': jnp.inf}
             self.obs_is_sequence_rec['network_REC_minus'] = True
             self.obs_is_local_rec['network_REC_minus'] = False
+            self.obs_is_normalizable_rec['network_REC_minus'] = True
 
         if 'network_REC_diff' in settings['rec_obs']:
             self._obs_rec_keys.append('network_REC_diff')
             rec_obs_space['network_REC_diff'] = {'low': -jnp.inf, 'high': jnp.inf}
             self.obs_is_sequence_rec['network_REC_diff'] = True
             self.obs_is_local_rec['network_REC_diff'] = False
+            self.obs_is_normalizable_rec['network_REC_diff'] = True
 
         if 'rec_actions_prev_step' in settings['rec_obs']:
             self._obs_rec_keys.append('rec_actions_prev_step')
             rec_obs_space['rec_actions_prev_step'] = spaces.Box(low=0., high=1., shape=(self.num_battery_agents,))
             self.obs_is_sequence_rec['rec_actions_prev_step'] = True
             self.obs_is_local_rec['rec_actions_prev_step'] = True
+            self.obs_is_normalizable_rec['rec_actions_prev_step'] = False
 
         if 'exponential_average_rec_actions_prev_step' in settings['rec_obs']:
             self._obs_rec_keys.append('exponential_average_rec_actions_prev_step')
             rec_obs_space['exponential_average_rec_actions_prev_step'] = spaces.Box(low=0., high=1., shape=(self.num_battery_agents,))
             self.obs_is_sequence_rec['exponential_average_rec_actions_prev_step'] = False
             self.obs_is_local_rec['exponential_average_rec_actions_prev_step'] = True
+            self.obs_is_normalizable_rec['exponential_average_rec_actions_prev_step'] = False
 
         # self._obs_rec_keys = tuple(self._obs_rec_keys)
+
+        print(self._obs_rec_keys)
 
         self.observation_spaces[self.rec_agent] = spaces.Dict(rec_obs_space)
 
@@ -632,13 +664,10 @@ class RECEnv(MultiAgentEnv):
 
         rec_reward = self._calc_rec_reward(self_consumption, actions[self.rec_agent])
 
-        r_glob = tot_incentives * actions[self.rec_agent]
+        tot_incentives_to_battery_agents = tot_incentives * self.num_battery_agents / (self.num_battery_agents + self.num_passive_houses)
+
+        r_glob = tot_incentives_to_battery_agents * actions[self.rec_agent]
         r_glob = self.glob_coeff * r_glob
-
-        # FIXME REMOVE, NEEDED FOR EXPERIMENTS
-        # r_glob = jnp.zeros_like(r_glob)
-        # FIXME REMOVE, NEEDED FOR EXPERIMENTS
-
 
         terminated = state.battery_states.soh <= self._termination['min_soh']
 
