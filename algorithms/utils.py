@@ -239,7 +239,7 @@ def restore_state(path):
 
     return network, config, params, train_info, val_info
 
-def save_state_multiagent(directory, networks_batteries, network_rec, config: dict, params: dict=None, train_info:dict=None, val_info:dict=None, is_checkpoint=False, num_steps=-1, additional_info=''):
+def save_state_multiagent(directory, networks_batteries, network_rec, config: dict, world_metadata, train_info:dict=None, val_info:dict=None, is_checkpoint=False, num_steps=-1, additional_info=''):
     # dir_name = (datetime.now().strftime("%Y%m%d_%H%M%S") +
     #             '_bat_net_type_' + str(config['NETWORK_TYPE_BATTERIES']) +
     #             '_rec_net_type_' + str(config['NETWORK_TYPE_REC']) +
@@ -268,19 +268,8 @@ def save_state_multiagent(directory, networks_batteries, network_rec, config: di
     with lzma.open(directory + 'config.xz', 'wb') as file:
         pickle.dump(config, file)
 
-    params = deepcopy(params)
-
-    if params is not None:
-        for record in (params['demands_battery_houses'] + params['demands_passive_houses'] +
-                       params['generations_battery_houses'] + params['generations_passive_houses'] +
-                       params['selling_prices_battery_houses'] + params['selling_prices_passive_houses'] +
-                       params['buying_prices_battery_houses'] + params['buying_prices_passive_houses'] +
-                       params['temp_amb_battery_houses']):
-            if 'data' in record.keys():
-                del record['data']
-
-    with lzma.open(directory + 'params.xz', 'wb') as file:
-        pickle.dump(params, file)
+    with lzma.open(directory + 'world_metadata.xz', 'wb') as file:
+        pickle.dump(world_metadata, file)
 
     val_info = jax.tree.map(lambda x: np.array(x), val_info)
 
@@ -308,8 +297,8 @@ def restore_state_multi_agent(path):
     if 'NETWORK_TYPE_REC' not in config.keys():
         config['NETWORK_TYPE_REC'] = 'actor_critic'
 
-    with lzma.open(path + '/params.xz', 'rb') as file:
-        params = pickle.load(file)
+    with lzma.open(path + '/world_metadata.xz', 'rb') as file:
+        world_metadata = pickle.load(file)
 
     network_batteries_shape = construct_battery_net_from_config_multi_agent(config, nnx.Rngs(0), num_nets=config.get('NUM_RL_AGENTS'))
     graphdef_batteries, abstract_batteries_state = nnx.split(network_batteries_shape)
@@ -336,4 +325,4 @@ def restore_state_multi_agent(path):
     with lzma.open(path + '/val_info.xz', 'rb') as file:
         val_info = pickle.load(file)
 
-    return network_batteries, network_rec, config, params, train_info, val_info
+    return network_batteries, network_rec, config, world_metadata, train_info, val_info

@@ -196,7 +196,7 @@ class Transition(NamedTuple):
     lstm_states_prev_rec: LSTMState = LSTMState((), ())
 
 
-def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, network_rec, optimizer_rec, rng, validate=True, freq_val=None, val_env=None, val_rng=None, val_num_iters=None, params=None, path_saving=None):
+def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, network_rec, optimizer_rec, rng, world_metadata, validate=True, freq_val=None, val_env=None, val_rng=None, val_num_iters=None, params=None, path_saving=None):
 
     infos = {}
     val_infos = {}
@@ -239,7 +239,7 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
         val_info = jax.device_put(val_info, device=jax.devices('cpu')[0])
         jax.tree.map(update, val_infos, val_info)
 
-        utils.save_state_multiagent(directory, network_batteries, network_rec, config, is_checkpoint=True, num_steps=i)
+        utils.save_state_multiagent(directory, network_batteries, network_rec, config, world_metadata, is_checkpoint=True, num_steps=i)
 
     @partial(nnx.jit, static_argnums=(0, 1, 7, 8, 9, 11))
     def train(env: RECEnv, config, network_batteries, optimizer_batteries, network_rec, optimizer_rec, rng, validate=True, freq_val=None, val_env=None,
@@ -393,7 +393,7 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
 
     print('Saving...')
 
-    utils.save_state_multiagent(directory, runner_state.network_batteries, runner_state.network_rec, config, params, infos, val_infos, is_checkpoint=False)
+    utils.save_state_multiagent(directory, runner_state.network_batteries, runner_state.network_rec, config, world_metadata, infos, val_infos, is_checkpoint=False)
 
     # metric = jax.tree.map(lambda *vals: np.stack(vals, axis=0), *infos)
 
