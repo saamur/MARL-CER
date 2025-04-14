@@ -121,10 +121,16 @@ def get_world_data(world_metadata:WorldMetadata, get_train=False, get_test=False
 
     return ret
 
-def get_world_metadata_from_template(template_name:str, template_folder_path:str='ernestogym/envs_jax/multi_agent/templates'):
+def get_world_metadata_from_template(template_name:str, world_kwargs=None, template_folder_path:str='ernestogym/envs_jax/multi_agent/templates'):
 
     with open(os.path.join(template_folder_path, template_name + '.yaml'), 'r') as fin:
         template = yaml.safe_load(fin)
+
+    world_kwargs_template = template.get('world_kwargs', {})
+
+    if world_kwargs is not None:
+        world_kwargs_template.update(world_kwargs)
+
 
     world_metadata = get_world_metadata(num_battery_houses=template['num_battery_houses'],
                                         demand_train=template['train']['demand'],
@@ -141,7 +147,7 @@ def get_world_metadata_from_template(template_name:str, template_folder_path:str
                                         electrical=template['electrical'],
                                         thermal=template['thermal'],
                                         aging=template['aging'],
-                                        **template['world_kwargs'])
+                                        **world_kwargs_template)
 
     return world_metadata
 

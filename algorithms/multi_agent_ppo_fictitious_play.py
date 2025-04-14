@@ -65,7 +65,7 @@ class VecEnvJaxMARL(JaxMARLWrapper):
 
 def make_train(config, env:RECEnv, network_batteries=None):
 
-    print('PPO NORMALE')
+    print('PPO FICTITIOUS')
 
     if 'NUM_MINIBATCHES_BATTERIES' not in config.keys():
         if 'NUM_MINIBATCHES' not in config.keys():
@@ -280,12 +280,12 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
     def end_update_step(info, i):
         if len(infos) == 0:
             # infos = jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES'],)+x.shape), info)
-            infos.update(jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES'],) + x.shape), info))
+            infos.update(jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES']*2,) + x.shape[1:]), info))
 
         info = jax.device_put(info, device=jax.devices('cpu')[0])
 
         def update(logs, new):
-            logs[i] = new
+            logs[2*i:2*(i+1)] = new
 
         jax.tree.map(update, infos, info)
 
@@ -362,35 +362,37 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
 
             # jax.debug.print('iter: {x}', x=curr_iter)
 
-            runner_state, traj_batch, last_val_batteries, last_val_rec = collect_trajectories(runner_state, config, env, rec_rule_based_policy)
-
-            # jax.debug.print('traj taken', ordered=True)
-
-            # jax.debug.print('{t}', t=jax.tree.map(lambda val: val.shape, traj_batch), ordered=True)
-
-            # CALCULATE ADVANTAGE
-
-            # last_val_batteries = traj_batch.values_batteries[-1]
-            # last_val_rec = traj_batch.value_rec[-1]
+            runner_state, traj_batch, last_val_batteries, last_val_rec = collect_trajectories(runner_state, config, env, True)
 
             advantages, targets = _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config)
 
-            advantages_batteries, advantages_rec = advantages
-            targets_batteries, targets_rec = targets
+            advantages_batteries, _ = advantages
+            targets_batteries, _ = targets
 
-            # UPDATE NETWORKS
-            # rng_upd = runner_state.rng
-            if config['NUM_RL_AGENTS'] > 0:
-                runner_state, total_loss_batteries = update_batteries_network(runner_state, traj_batch,
-                                                                              advantages_batteries, targets_batteries,
-                                                                              config)
-            # runner_state = runner_state._replace(rng=rng_upd)
+            runner_state, total_loss_batteries = update_batteries_network(runner_state, traj_batch,
+                                                                          advantages_batteries, targets_batteries,
+                                                                          config)
 
-            if not config['USE_REC_RULE_BASED_POLICY']:
-                runner_state, total_loss_rec = update_rec_network(runner_state, traj_batch, advantages_rec,
-                                                                  targets_rec, config)
+            metric1 = traj_batch.info
 
-            metric = traj_batch.info
+            # runner_state = nnx.cond(update_batteries,
+            #                         lambda run, traj, adv_bat, tar_bat, adv_rec, tar_rec, con : update_batteries_network(run, traj, adv_bat, tar_bat, con)[0],
+            #                         lambda run, traj, adv_bat, tar_bat, adv_rec, tar_rec, con : update_rec_network(run, traj, adv_rec, tar_rec, con)[0],
+            #                         runner_state, traj_batch, advantages_batteries, targets_batteries, advantages_rec, targets_rec, config)
+
+            runner_state, traj_batch, last_val_batteries, last_val_rec = collect_trajectories(runner_state, config, env, False)
+
+            advantages, targets = _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config)
+
+            _, advantages_rec = advantages
+            _, targets_rec = targets
+
+            runner_state, total_loss_rec = update_rec_network(runner_state, traj_batch, advantages_rec,
+                                                              targets_rec, config)
+
+            metric2 = traj_batch.info
+
+            metric = jax.tree.map(lambda x, y: jnp.stack((x, y), axis=0), metric1, metric2)
 
             if config.get('DEBUG'):
 
@@ -478,11 +480,7 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
     else:
         return {'runner_state': runner_state, 'metrics': infos}
 
-def collect_trajectories(runner_state: RunnerState, config, env, rec_rule_based_policy):
-    network_batteries, optimizer_batteries, network_rec, optimizer_rec = (runner_state.network_batteries,
-                                                                           runner_state.optimizer_batteries,
-                                                                           runner_state.network_rec,
-                                                                           runner_state.optimizer_rec)
+def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_update):
 
     def _env_step(runner_state: RunnerState):
 
@@ -502,31 +500,26 @@ def collect_trajectories(runner_state: RunnerState, config, env, rec_rule_based_
 
         last_obs_batteries_num_batteries_first = jnp.swapaxes(runner_state.last_obs_batteries, 0, 1)
 
-        if config['NUM_RL_AGENTS'] > 0:
-            if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
-                prev_act_state, prev_cri_state = jax.tree.map(lambda x, y: jnp.where(runner_state.done_prev_batteries[(slice(None), slice(None)) + (None,)*(x.ndim-1)], x[None, :], y),
-                                                              network_batteries.get_initial_lstm_state(),
-                                                              (runner_state.last_lstm_state_batteries.act_state, runner_state.last_lstm_state_batteries.cri_state))
-                prev_act_state_num_batteries_first, prev_cri_state_num_batteries_first = jax.tree.map(lambda x : jnp.swapaxes(x, 0, 1), (prev_act_state, prev_cri_state))
-                pi, value_batteries, lstm_act_state, lstm_cri_state = network_batteries(last_obs_batteries_num_batteries_first[:config['NUM_RL_AGENTS']], prev_act_state_num_batteries_first, prev_cri_state_num_batteries_first)
-                lstm_act_state_batteries, lstm_cri_state_batteries = jax.tree.map(lambda x : jnp.swapaxes(x, 0, 1), (lstm_act_state, lstm_cri_state))
-            else:
-                pi, value_batteries = network_batteries(last_obs_batteries_num_batteries_first[:config['NUM_RL_AGENTS']])
-                lstm_act_state_batteries, lstm_cri_state_batteries = runner_state.last_lstm_state_batteries.act_state, runner_state.last_lstm_state_batteries.cri_state
 
-            actions_batteries_rl = pi.sample(seed=_rng)                        # batteries first
-            log_prob_batteries = pi.log_prob(actions_batteries_rl)             # batteries first
-
-            value_batteries, actions_batteries_rl, log_prob_batteries = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1),
-                                                                                  (value_batteries, actions_batteries_rl,
-                                                                                   log_prob_batteries))  # num_envs first
-
-            actions_batteries.append(actions_batteries_rl)
+        if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
+            prev_act_state, prev_cri_state = jax.tree.map(lambda x, y: jnp.where(runner_state.done_prev_batteries[(slice(None), slice(None)) + (None,)*(x.ndim-1)], x[None, :], y),
+                                                          network_batteries.get_initial_lstm_state(),
+                                                          (runner_state.last_lstm_state_batteries.act_state, runner_state.last_lstm_state_batteries.cri_state))
+            prev_act_state_num_batteries_first, prev_cri_state_num_batteries_first = jax.tree.map(lambda x : jnp.swapaxes(x, 0, 1), (prev_act_state, prev_cri_state))
+            pi, value_batteries, lstm_act_state, lstm_cri_state = network_batteries(last_obs_batteries_num_batteries_first[:config['NUM_RL_AGENTS']], prev_act_state_num_batteries_first, prev_cri_state_num_batteries_first)
+            lstm_act_state_batteries, lstm_cri_state_batteries = jax.tree.map(lambda x : jnp.swapaxes(x, 0, 1), (lstm_act_state, lstm_cri_state))
         else:
-            value_batteries = jnp.zeros((config['NUM_ENVS'],))
-            log_prob_batteries = jnp.zeros((config['NUM_ENVS'],))
+            pi, value_batteries = network_batteries(last_obs_batteries_num_batteries_first[:config['NUM_RL_AGENTS']])
             lstm_act_state_batteries, lstm_cri_state_batteries = runner_state.last_lstm_state_batteries.act_state, runner_state.last_lstm_state_batteries.cri_state
 
+        actions_batteries_rl = pi.sample(seed=_rng) if for_batteries_update else pi.mean()                        # batteries first
+        log_prob_batteries = pi.log_prob(actions_batteries_rl)             # batteries first
+
+        value_batteries, actions_batteries_rl, log_prob_batteries = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1),
+                                                                              (value_batteries, actions_batteries_rl,
+                                                                               log_prob_batteries))  # num_envs first
+
+        actions_batteries.append(actions_batteries_rl)
 
         if config['NUM_BATTERY_FIRST_AGENTS'] > 0:
             idx_start_bf = config['NUM_RL_AGENTS']
@@ -550,7 +543,6 @@ def collect_trajectories(runner_state: RunnerState, config, env, rec_rule_based_
 
         if config['NUM_RANDOM_AGENTS'] > 0:
             rng, _rng = jax.random.split(rng)
-            idx_start_random = config['NUM_RL_AGENTS']+config['NUM_BATTERY_FIRST_AGENTS']+config['NUM_ONLY_MARKET_AGENTS']
 
             actions_batteries_random = jax.random.uniform(_rng,
                                                           shape=(config['NUM_ENVS'], config['NUM_RANDOM_AGENTS']),
@@ -590,23 +582,17 @@ def collect_trajectories(runner_state: RunnerState, config, env, rec_rule_based_
 
         # print(f'rec_obs {jax.tree.map(lambda x: x.shape, rec_obsv)}')
 
-        if not config['USE_REC_RULE_BASED_POLICY']:
-            if config['NETWORK_TYPE_REC'] == 'recurrent_actor_critic':
-                prev_act_state, prev_cri_state = jax.tree.map(lambda x, y: jnp.where(runner_state.done_prev_rec[(slice(None),) + (None,)*x.ndim], x[None, :], y),
-                                                              network_rec.get_initial_lstm_state(),
-                                                              (runner_state.last_lstm_state_rec.act_state, runner_state.last_lstm_state_rec.cri_state))
-                pi, value_rec, lstm_act_state_rec, lstm_cri_state_rec = network_rec(rec_obsv, prev_act_state, prev_cri_state)
-            else:
-                pi, value_rec = network_rec(rec_obsv)
-                lstm_act_state_rec, lstm_cri_state_rec = runner_state.last_lstm_state_rec.act_state, runner_state.last_lstm_state_rec.cri_state
-
-            actions_rec = pi.sample(seed=_rng)
-            log_probs_rec = pi.log_prob(actions_rec + 1e-8)
+        if config['NETWORK_TYPE_REC'] == 'recurrent_actor_critic':
+            prev_act_state, prev_cri_state = jax.tree.map(lambda x, y: jnp.where(runner_state.done_prev_rec[(slice(None),) + (None,)*x.ndim], x[None, :], y),
+                                                          network_rec.get_initial_lstm_state(),
+                                                          (runner_state.last_lstm_state_rec.act_state, runner_state.last_lstm_state_rec.cri_state))
+            pi, value_rec, lstm_act_state_rec, lstm_cri_state_rec = network_rec(rec_obsv, prev_act_state, prev_cri_state)
         else:
-            actions_rec = rec_rule_based_policy(rec_obsv)
-            log_probs_rec = jnp.zeros((config['NUM_ENVS'],))
-            value_rec = jnp.zeros((config['NUM_ENVS'],))
+            pi, value_rec = network_rec(rec_obsv)
             lstm_act_state_rec, lstm_cri_state_rec = runner_state.last_lstm_state_rec.act_state, runner_state.last_lstm_state_rec.cri_state
+
+        actions_rec = pi.sample(seed=_rng) if not for_batteries_update else pi.mean()
+        log_probs_rec = pi.log_prob(actions_rec + 1e-8)
 
         # jax.debug.print('alpha {t}', t=pi.concentration, ordered=True)
         # jax.debug.print('val {t}', t=value_rec, ordered=True)

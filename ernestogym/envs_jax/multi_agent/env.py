@@ -175,12 +175,18 @@ class RECEnv(MultiAgentEnv):
         if self._termination['max_iterations'] is None:
             self._termination['max_iterations'] = jnp.inf
 
-        self.trading_coeff = settings['reward']['trading_coeff'] if 'trading_coeff' in settings['reward'] else 0
-        self.op_cost_coeff = settings['reward']['operational_cost_coeff'] if 'operational_cost_coeff' in settings['reward'] else 0
-        self.deg_coeff = settings['reward']['degradation_coeff'] if 'degradation_coeff' in settings['reward'] else 0
-        self.clip_action_coeff = settings['reward']['clip_action_coeff'] if 'clip_action_coeff' in settings['reward'] else 0
-        self.glob_coeff = settings['reward']['glob_coeff'] if 'glob_coeff' in settings['reward'] else 0
+        self.trading_coeff = jnp.array(settings['reward']['trading_coeff'] if 'trading_coeff' in settings['reward'] else 0)
+        self.op_cost_coeff = jnp.array(settings['reward']['operational_cost_coeff'] if 'operational_cost_coeff' in settings['reward'] else 0)
+        self.deg_coeff = jnp.array(settings['reward']['degradation_coeff'] if 'degradation_coeff' in settings['reward'] else 0)
+        self.clip_action_coeff = jnp.array(settings['reward']['clip_action_coeff'] if 'clip_action_coeff' in settings['reward'] else 0)
+        self.glob_coeff = jnp.array(settings['reward']['glob_coeff'] if 'glob_coeff' in settings['reward'] else 0)
         self.use_reward_normalization = settings['use_reward_normalization']
+
+        assert self.trading_coeff.shape == () or self.trading_coeff.shape == (self.num_battery_agents,)
+        assert self.op_cost_coeff.shape == () or self.op_cost_coeff.shape == (self.num_battery_agents,)
+        assert self.deg_coeff.shape == () or self.deg_coeff.shape == (self.num_battery_agents,)
+        assert self.clip_action_coeff.shape == () or self.clip_action_coeff.shape == (self.num_battery_agents,)
+        assert self.glob_coeff.shape == () or self.glob_coeff.shape == (self.num_battery_agents,)
 
         print('norm? ' + str(self.use_reward_normalization))
 
@@ -200,6 +206,7 @@ class RECEnv(MultiAgentEnv):
         self.battery_obs_space['buying_price'] = {'low': 0., 'high': jnp.inf}
         self.battery_obs_space['selling_price'] = {'low': 0., 'high': jnp.inf}
         obs_is_sequence = [True, True, True, True, True, True]
+        self.obs_is_local_battery = [True, True, True, True, True, True]
         self.obs_is_normalizable_battery = [True, False, True, True, True, True]
 
         # for a in self.battery_agents:
@@ -216,6 +223,7 @@ class RECEnv(MultiAgentEnv):
             self._obs_battery_agents_keys.append('soh')
             self.battery_obs_space['soh'] = {'low': 0., 'high': 1.}
             obs_is_sequence.append(True)
+            self.obs_is_local_battery.append(True)
             self.obs_is_normalizable_battery.append(False)
 
         if 'day_of_year' in settings['battery_obs']:
@@ -226,6 +234,8 @@ class RECEnv(MultiAgentEnv):
             self.battery_obs_space['cos_day_of_year'] = {'low': -1, 'high': 1}
             obs_is_sequence.append(False)
             obs_is_sequence.append(False)
+            self.obs_is_local_battery.append(True)
+            self.obs_is_local_battery.append(True)
             self.obs_is_normalizable_battery.append(False)
             self.obs_is_normalizable_battery.append(False)
 
@@ -237,6 +247,8 @@ class RECEnv(MultiAgentEnv):
             self.battery_obs_space['cos_seconds_of_day'] = {'low': -1, 'high': 1}
             obs_is_sequence.append(False)
             obs_is_sequence.append(False)
+            self.obs_is_local_battery.append(True)
+            self.obs_is_local_battery.append(True)
             self.obs_is_normalizable_battery.append(False)
             self.obs_is_normalizable_battery.append(False)
 
@@ -252,24 +264,44 @@ class RECEnv(MultiAgentEnv):
             self._obs_battery_agents_keys.append('network_REC_plus')
             self.battery_obs_space['network_REC_plus'] = {'low': 0, 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_local_battery.append(False)
             self.obs_is_normalizable_battery.append(True)
 
         if 'network_REC_minus' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_minus')
             self.battery_obs_space['network_REC_minus'] = {'low': 0, 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_local_battery.append(False)
             self.obs_is_normalizable_battery.append(True)
 
         if 'network_REC_diff' in settings['battery_obs']:
             self._obs_battery_agents_keys.append('network_REC_diff')
             self.battery_obs_space['network_REC_diff'] = {'low': -jnp.inf, 'high': jnp.inf}
             obs_is_sequence.append(True)
+            self.obs_is_local_battery.append(False)
             self.obs_is_normalizable_battery.append(True)
+
+        if 'self_consumption_marginal_contribution' in settings['battery_obs']:
+            self._obs_battery_agents_keys.append('self_consumption_marginal_contribution')
+            self.battery_obs_space['self_consumption_marginal_contribution'] = {'low': 0, 'high': jnp.inf}
+            obs_is_sequence.append(True)
+            self.obs_is_local_battery.append(False)
+            self.obs_is_normalizable_battery.append(True)
+
+        if 'rec_actions_prev_step' in settings['battery_obs']:
+            self._obs_battery_agents_keys.append('rec_actions_prev_step')
+            self.battery_obs_space['rec_actions_prev_step'] = {'low': 0, 'high': 1}
+            obs_is_sequence.append(True)
+            self.obs_is_local_battery.append(False)
+            self.obs_is_normalizable_battery.append(True)
+
 
         indices = np.argsort(np.logical_not(obs_is_sequence))
 
         self._obs_battery_agents_keys = [self._obs_battery_agents_keys[i] for i in indices]
         self.obs_is_normalizable_battery = [self.obs_is_normalizable_battery[i] for i in indices]
+        self.obs_is_local_battery = [self.obs_is_local_battery[i] for i in indices]
+        self.obs_is_sequence_battery = [obs_is_sequence[i] for i in indices]
 
         self.num_battery_obs_sequences = np.sum(obs_is_sequence)
 
@@ -412,6 +444,13 @@ class RECEnv(MultiAgentEnv):
             self.obs_is_local_rec['exponential_average_rec_actions_prev_step'] = True
             self.obs_is_normalizable_rec['exponential_average_rec_actions_prev_step'] = False
 
+        if 'battery_agents_marginal_contribution' in settings['rec_obs']:
+            self._obs_rec_keys.append('battery_agents_marginal_contribution')
+            rec_obs_space['battery_agents_marginal_contribution'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))
+            self.obs_is_sequence_rec['battery_agents_marginal_contribution'] = True
+            self.obs_is_local_rec['battery_agents_marginal_contribution'] = True
+            self.obs_is_normalizable_rec['battery_agents_marginal_contribution'] = True
+
         # self._obs_rec_keys = tuple(self._obs_rec_keys)
 
         print(self._obs_rec_keys)
@@ -478,6 +517,36 @@ class RECEnv(MultiAgentEnv):
 
         return balance_plus, -balance_minus
 
+    def _calc_marginal_contributions(self, state: EnvState, past_shift=0):
+        demands_batteries = self._get_demands(state.demands_battery_houses, state.timeframe - past_shift)
+        generations_batteries = self._get_generations(self.generations_battery_houses, state.timeframe - past_shift)
+
+        power_batteries = state.battery_states.electrical_state.p
+
+        balance_battery_houses = generations_batteries - demands_batteries - power_batteries
+
+        balance_battery_houses_plus = jnp.where(balance_battery_houses >= 0, balance_battery_houses, 0)
+        balance_battery_houses_minus = -jnp.where(balance_battery_houses < 0, balance_battery_houses, 0)
+
+        balance_plus = balance_battery_houses_plus.sum()
+        balance_minus = balance_battery_houses_minus.sum()
+
+        if self.num_passive_houses > 0:
+            demands_passive_houses = self._get_demands(state.demands_passive_houses, state.timeframe-past_shift)
+            generations_passive_houses = self._get_generations(self.generations_passive_houses, state.timeframe-past_shift)
+            balance_passive_houses = generations_passive_houses - demands_passive_houses
+
+            balance_passive_houses_plus = jnp.where(balance_passive_houses >= 0, balance_passive_houses, 0)
+            balance_passive_houses_minus = -jnp.where(balance_passive_houses < 0, balance_passive_houses, 0)
+
+            balance_plus += balance_passive_houses_plus.sum()
+            balance_minus += balance_passive_houses_minus.sum()
+
+        marginal_balance_plus = balance_plus - balance_battery_houses_plus
+        marginal_balance_minus = balance_minus - balance_battery_houses_minus
+        marginal_contribution = jnp.minimum(balance_plus, balance_minus) - jnp.minimum(marginal_balance_plus, marginal_balance_minus)
+
+        return marginal_contribution
 
     def get_obs(self, state: EnvState) -> Dict[str, chex.Array]:
         demands_batteries = self._get_demands(state.demands_battery_houses, state.timeframe)
@@ -524,6 +593,10 @@ class RECEnv(MultiAgentEnv):
                         obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=balance_minus))
                     case 'network_REC_diff':
                         obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus-balance_minus))
+                    case 'self_consumption_marginal_contribution':
+                        obs_list.append(self._calc_marginal_contributions(state))
+                    case 'rec_actions_prev_step':
+                        obs_list.append(state.prev_actions_rec)
 
             obs_mat = jnp.array(obs_list)
 
@@ -545,6 +618,9 @@ class RECEnv(MultiAgentEnv):
 
             if 'exponential_average_rec_actions_prev_step' in self._obs_rec_keys:
                 rec_obs['exponential_average_rec_actions_prev_step'] = jnp.zeros(self.num_battery_agents)
+
+            if 'battery_agents_marginal_contribution' in self._obs_rec_keys:
+                rec_obs['battery_agents_marginal_contribution'] = jnp.zeros(self.num_battery_agents)
 
             for o in [key for key in self._obs_rec_keys if not self.obs_is_local_rec[key]]:
                 rec_obs[o] = 0.
@@ -599,6 +675,8 @@ class RECEnv(MultiAgentEnv):
                         rec_obs['rec_actions_prev_step'] = state.prev_actions_rec
                     case 'exponential_average_rec_actions_prev_step':
                         rec_obs['exponential_average_rec_actions_prev_step'] = state.exp_avg_rev_actions_rec
+                    case 'battery_agents_marginal_contribution':
+                        rec_obs['battery_agents_marginal_contribution'] = self._calc_marginal_contributions(state)
 
             if self.num_passive_houses > 0:
                 passive_demands = self._get_demands(state.demands_passive_houses, state.timeframe)
@@ -642,7 +720,7 @@ class RECEnv(MultiAgentEnv):
                                                              fill_value=profile_index %
                                                                         self.dem_matrices_passive_houses.shape[1]))
 
-            demands = jax.vmap(Demand.build_demand_data, in_axes=(0, None))(self.dem_matrices_passive_houses[jnp.arange(self.num_battery_agents), profiles_indices],
+            demands = jax.vmap(Demand.build_demand_data, in_axes=(0, None))(self.dem_matrices_passive_houses[jnp.arange(self.num_passive_houses), profiles_indices],
                                                                             self.env_step)
             state.replace(demands_passive_houses=demands)
 
@@ -667,7 +745,7 @@ class RECEnv(MultiAgentEnv):
         tot_incentives_to_battery_agents = tot_incentives * self.num_battery_agents / (self.num_battery_agents + self.num_passive_houses)
 
         r_glob = tot_incentives_to_battery_agents * actions[self.rec_agent]
-        r_glob = self.glob_coeff * r_glob
+        weig_r_glob = self.glob_coeff * r_glob
 
         terminated = state.battery_states.soh <= self._termination['min_soh']
 
@@ -707,17 +785,20 @@ class RECEnv(MultiAgentEnv):
                 'pure_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
                                 'r_op': jnp.zeros(self.num_battery_agents),
                                 'r_deg': jnp.zeros(self.num_battery_agents),
-                                'r_clipping': jnp.zeros(self.num_battery_agents)},
+                                'r_clipping': jnp.zeros(self.num_battery_agents),
+                                'r_glob': r_glob},
                 'norm_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
                                 'r_op': jnp.zeros(self.num_battery_agents),
                                 'r_deg': jnp.zeros(self.num_battery_agents),
-                                'r_clipping': jnp.zeros(self.num_battery_agents)},
+                                'r_clipping': jnp.zeros(self.num_battery_agents),
+                                'r_glob': r_glob},
                 'weig_reward': {'r_trad': jnp.zeros(self.num_battery_agents),
                                 'r_op': jnp.zeros(self.num_battery_agents),
                                 'r_deg': jnp.zeros(self.num_battery_agents),
-                                'r_clipping': jnp.zeros(self.num_battery_agents)},
-                'r_tot': r_glob,
-                'r_glob': r_glob,
+                                'r_clipping': jnp.zeros(self.num_battery_agents),
+                                'r_glob': weig_r_glob},
+                'r_tot': weig_r_glob,
+                # 'r_glob': r_glob,
                 'self_consumption': self_consumption,
                 'balance_plus': balance_plus,
                 'balance_minus': balance_minus,
@@ -816,17 +897,20 @@ class RECEnv(MultiAgentEnv):
                 'pure_reward': {'r_trad': r_trading,
                                 'r_op': r_op,
                                 'r_deg': r_deg,
-                                'r_clipping': r_clipping},
+                                'r_clipping': r_clipping,
+                                'r_glob': jnp.zeros(self.num_battery_agents)},
                 'norm_reward': {'r_trad': norm_r_trading,
                                 'r_op': norm_r_op,
                                 'r_deg': norm_r_deg,
-                                'r_clipping': norm_r_clipping},
+                                'r_clipping': norm_r_clipping,
+                                'r_glob': jnp.zeros(self.num_battery_agents)},
                 'weig_reward': {'r_trad': weig_r_trading,
                                 'r_op': weig_r_op,
                                 'r_deg': weig_r_deg,
-                                'r_clipping': weig_r_clipping},
+                                'r_clipping': weig_r_clipping,
+                                'r_glob': jnp.zeros(self.num_battery_agents)},
                 'r_tot': r_tot,
-                'r_glob': jnp.zeros(self.num_battery_agents),
+                # 'r_glob': jnp.zeros(self.num_battery_agents),
                 'self_consumption': 0.,
                 'balance_plus': 0.,
                 'balance_minus': 0.,

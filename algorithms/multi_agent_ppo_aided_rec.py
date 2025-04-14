@@ -65,8 +65,6 @@ class VecEnvJaxMARL(JaxMARLWrapper):
 
 def make_train(config, env:RECEnv, network_batteries=None):
 
-    print('PPO NORMALE')
-
     if 'NUM_MINIBATCHES_BATTERIES' not in config.keys():
         if 'NUM_MINIBATCHES' not in config.keys():
             raise ValueError("At least one of config['NUM_MINIBATCHES_BATTERIES'] and config['NUM_MINIBATCHES'] must be provided")
@@ -105,6 +103,7 @@ def make_train(config, env:RECEnv, network_batteries=None):
         if 'ENT_COEF' not in config.keys():
             raise ValueError("At least one of config['ENT_COEF_BATTERIES'] and config['ENT_COEF'] must be provided")
         config['ENT_COEF_BATTERIES'] = config['ENT_COEF']
+
 
     config['REC_ACTION_SPACE_SIZE'] = env.action_space(env.rec_agent).shape[0]
     config['REC_OBS_KEYS'] = tuple(env._obs_rec_keys)
@@ -388,7 +387,7 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
 
             if not config['USE_REC_RULE_BASED_POLICY']:
                 runner_state, total_loss_rec = update_rec_network(runner_state, traj_batch, advantages_rec,
-                                                                  targets_rec, config)
+                                                                  targets_rec, config, curr_iter)
 
             metric = traj_batch.info
 
@@ -722,10 +721,6 @@ def _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config):
     assert rewards_batteries.shape[1] == config['NUM_ENVS']
     assert rewards_batteries.shape[2] == config['NUM_RL_AGENTS']
 
-    # if config['NORMALIZE_REWARD_FOR_GAE_AND_TARGETS']:
-    #     rewards_batteries = (rewards_batteries - rewards_batteries.mean(axis=(0, 1), keepdims=True)) / (rewards_batteries.std(axis=(0, 1), keepdims=True) + 1e-8)
-    #     reward_rec = (reward_rec - reward_rec.mean()) / (reward_rec.std() + 1e-8)
-
     if config['NORMALIZE_REWARD_FOR_GAE_AND_TARGETS_BATTERIES']:
         rewards_batteries = (rewards_batteries - rewards_batteries.mean(axis=(0, 1), keepdims=True)) / (rewards_batteries.std(axis=(0, 1), keepdims=True) + 1e-8)
     if config['NORMALIZE_REWARD_FOR_GAE_AND_TARGETS_REC']:
@@ -773,9 +768,6 @@ def _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config):
 
     return ((advantages_batteries, advantages_rec),
             (targets_batteries, targets_rec))
-
-    # return ((advantages_batteries, advantages_rec),
-    #         (advantages_batteries + traj_batch.values_batteries, advantages_rec + traj_batch.value_rec))
 
 class UpdateState(NamedTuple):
     network: Union[StackedActorCritic, StackedRecurrentActorCritic, RECActorCritic, RECRecurrentActorCritic]
@@ -1052,15 +1044,31 @@ def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, 
 
     return runner_state, loss_info
 
+def rec_scarce_policy(rec_obs):
+    net_exchange = rec_obs['generations_battery_houses'] - rec_obs['demands_base_battery_houses'] - rec_obs['demands_battery_battery_houses']
 
-def update_rec_network(runner_state, traj_batch, advantages, targets, config):
-    def _update_epoch(update_state: UpdateState):
+    net_exchange_plus = jnp.maximum(net_exchange, 0)
+    net_exchange_minus = -jnp.minimum(net_exchange, 0)
+
+    action_plus = net_exchange_plus / (net_exchange_plus.sum(axis=-1, keepdims=True) + 1e-8)
+    action_minus = net_exchange_minus / (net_exchange_minus.sum(axis=-1, keepdims=True) + 1e-8)
+
+    actions = (rec_obs['network_REC_plus'] > rec_obs['network_REC_minus'])[..., None] * action_minus + (rec_obs['network_REC_plus'] <= rec_obs['network_REC_minus'])[..., None] * action_plus
+
+    actions = jnp.where(actions.sum(axis=-1, keepdims=True) == 0., jnp.ones_like(actions)/actions.shape[-1], actions)
+
+    # jax.debug.print('{x}', x=actions)
+
+    return actions
+
+def update_rec_network(runner_state, traj_batch, advantages, targets, config, iter):
+    def _update_epoch(update_state: UpdateState, epoch):
         def _update_minbatch(net_and_optim, traj_batch, advantages, targets):
             network_rec, optimizer_rec = net_and_optim
 
             # print(jax.tree.map(lambda x: x.shape, batch_info))
 
-            def _loss_fn_rec(network, traj_batch, gae, targets):
+            def _ppo_loss(network, traj_batch, gae, targets):
 
                 traj_batch_obs = traj_batch.obs_rec
                 traj_batch_actions = traj_batch.actions_rec
@@ -1112,8 +1120,31 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
                         + config['VF_COEF'] * value_loss
                         - config['ENT_COEF_REC'] * entropy
                 )
+                # jax.debug.print('actor: {a}, value: {v}, entropy: {e}', a=loss_actor, v=value_loss, e=entropy, ordered=True)
                 # jax.debug.print('rec_loss', ordered=True)
                 return total_loss, (value_loss, loss_actor, entropy)
+
+            def _loss_to_rule_based(network, traj_batch, targets):
+                pi, value = network(traj_batch.obs_rec)
+                nll = - pi.log_prob(rec_scarce_policy(traj_batch.obs_rec) + 1e-8).mean()
+                if config['NORMALIZE_TARGETS_REC']:
+                    targets = (targets - targets.mean()) / (targets.std() + 1e-8)
+                critic_mse = 0.5 * jnp.mean((value - targets)**2)
+
+                # jax.debug.print('nll: {x}', x=nll, ordered=True)
+                # jax.debug.print('cri: {x}', x=critic_mse, ordered=True)
+                return nll + critic_mse, (nll, critic_mse)
+
+            def _loss_fn_rec(network, traj_batch, gae, targets):
+                ppo_loss, ppo_aux = _ppo_loss(network, traj_batch, gae, targets)
+                rule_based_loss, rule_based_aux = _loss_to_rule_based(network, traj_batch, targets)
+                alpha = optax.schedules.cosine_decay_schedule(1, config['NUM_UPDATES'] * config['UPDATE_EPOCHS'] * config['FRACTION_IMITATION_LEARNING'])(iter * config['UPDATE_EPOCHS'] + epoch)
+
+                loss = (1-alpha) * ppo_loss + alpha * rule_based_loss
+
+                # jax.debug.print('alpha {x}', x=alpha)
+                return loss, ppo_aux + rule_based_aux
+
 
             def _loss_fn_rec_recurrent(network, traj_batch:Transition, gae, targets):
                 # RERUN NETWORK
@@ -1187,34 +1218,12 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
                 targets
             )
 
-            # jax.debug.print('rec {x}', x=optax.global_norm(grads_rec), ordered=True)
+            # jax.debug.print('norm ppo: {x}', x=optax.global_norm(nnx.value_and_grad(_ppo_loss, has_aux=True)(network_rec, traj_batch, advantages, targets)[1]), ordered=True)
+            # jax.debug.print('norm rule-based: {x}',
+            #                 x=optax.global_norm(nnx.value_and_grad(_loss_to_rule_based, has_aux=True)(network_rec, traj_batch, targets)[1]), ordered=True)
+            #
+            # jax.debug.print('total grad norm {x}', x=optax.global_norm(grads_rec), ordered=True)
             # jax.debug.print('rec {x}', x=total_loss_rec[1], ordered=True)
-
-            # jax.lax.cond(jnp.isnan(total_loss_rec[0]).any(), lambda : jax.debug.breakpoint(), lambda : None)
-
-
-
-
-
-            # def check_pytree(pytree):
-            #     for key, leaf in jax.tree.leaves_with_path(pytree):
-            #         checkify.check(jnp.logical_not(jnp.isfinite(leaf).all()), 'nope, the problem is' + str(key))
-            #         jax.debug.print('{a}\t{x}', a=jnp.logical_not(jnp.isfinite(leaf).all()), x=key)
-            #
-            # jittable_check_pytree = checkify.checkify(check_pytree)
-            #
-            # jax.debug.breakpoint()
-            #
-            # jittable_check_pytree(nnx.state(network_rec, nnx.Param))
-            # jittable_check_pytree(traj_batch)
-            # jittable_check_pytree(advantages)
-            # jittable_check_pytree(targets)
-            # jittable_check_pytree(grads_rec)
-            # jittable_check_pytree(total_loss_rec)
-
-            # print('tot loss batteites')
-            # print(jax.tree_map(lambda x: x.shape, total_loss_batteries))
-            # jax.debug.print('rec {x}', x=total_loss_rec[0])
 
             optimizer_rec.update(grads_rec)
 
@@ -1284,11 +1293,10 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
                                traj_batch=traj_batch, advantages=advantages, targets=targets, rng=runner_state.rng)
 
     scanned_update_epoch = nnx.scan(_update_epoch,
-                                    in_axes=nnx.Carry,
-                                    out_axes=(nnx.Carry, 0),
-                                    length=config['UPDATE_EPOCHS'])
+                                    in_axes=(nnx.Carry, 0),
+                                    out_axes=(nnx.Carry, 0))
 
-    update_state, loss_info = scanned_update_epoch(update_state)
+    update_state, loss_info = scanned_update_epoch(update_state, jnp.arange(config['UPDATE_EPOCHS']))
 
     # update_state, loss_info = jax.lax.scan(
     #     _update_epoch, update_state, None, config['UPDATE_EPOCHS']
