@@ -82,6 +82,75 @@ class ActorCritic(nnx.Module):
 
         return pi, jnp.squeeze(critic, axis=-1)
 
+class AsymmetricActorCritic(nnx.Module):
+    def __init__(self, in_features_act: int, in_features_only_cri: int, out_features: int, activation: str, rngs, net_arch: list=None, act_net_arch: list=None, cri_net_arch: list=None, add_logistic_to_actor: bool = False, normalize: bool = False, is_feature_normalizable: Sequence[bool] = None):
+
+        if act_net_arch is None:
+            if net_arch is None:
+                raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
+            act_net_arch = net_arch
+        if cri_net_arch is None:
+            if net_arch is None:
+                raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
+            cri_net_arch = net_arch
+
+        act_net_arch = list(act_net_arch)
+        cri_net_arch = list(cri_net_arch)
+
+        self.normalize = normalize
+        if normalize:
+            print('norm batt')
+            # self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
+            self.norm_layer_act = RunningNorm(num_features=in_features_act, use_bias=False, use_scale=False, rngs=rngs)
+            self.norm_layer_cri = RunningNorm(num_features=in_features_act+in_features_only_cri, use_bias=False, use_scale=False, rngs=rngs)
+
+        activation = utils.activation_from_name(activation)
+
+        act_net_arch = [in_features_act] + act_net_arch + [out_features]
+
+        self.act_layers = []
+        for i in range(len(act_net_arch) - 2):
+            self.act_layers.append(nnx.Linear(act_net_arch[i], act_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+            self.act_layers.append(activation)
+        self.act_layers.append(nnx.Linear(act_net_arch[-2], act_net_arch[-1], kernel_init=orthogonal(0.1), bias_init=constant(0.), rngs=rngs))
+        if add_logistic_to_actor:
+            self.act_layers.append(nnx.sigmoid)
+
+        self.log_std = nnx.Param(jnp.zeros(out_features))# - 1.)
+
+        cri_net_arch = [in_features_act+in_features_only_cri] + cri_net_arch + [1]
+
+        self.cri_layers = []
+        for i in range(len(cri_net_arch) - 2):
+            self.cri_layers.append(nnx.Linear(cri_net_arch[i], cri_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+            self.cri_layers.append(activation)
+        self.cri_layers.append(nnx.Linear(cri_net_arch[-2], cri_net_arch[-1], kernel_init=orthogonal(1.), bias_init=constant(0.), rngs=rngs))
+
+    def __call__(self, x, x_only_cri=None, return_cri=True):
+
+        if self.normalize:
+            x = self.norm_layer_act(x)
+
+        actor_mean = x
+        for layer in self.act_layers:
+            actor_mean = layer(actor_mean)
+
+        pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(self.log_std.value))
+
+        if return_cri:
+            if x_only_cri is not None:
+                critic = jnp.concat((x, x_only_cri), axis=-1)
+            else:
+                critic = x
+
+            for layer in self.cri_layers:
+                critic = layer(critic)
+            critic = jnp.squeeze(critic, axis=-1)
+        else:
+            critic = None
+
+        return pi, critic
+
 
 class RecurrentActorCritic(nnx.Module):
     def __init__(self, in_features: int, out_features: int, activation: str, rngs,
@@ -310,6 +379,35 @@ class StackedActorCritic(ActorCritic):
             return pi.loc, pi.scale_diag, val
 
         pi_loc, pi_scale, val = vmapped_fn(self, x)
+        pi = distrax.MultivariateNormalDiag(pi_loc, pi_scale)
+
+        # jax.debug.print('shape SAC: {x}', x=x.shape)
+        return pi, val
+
+class StackedAsymmetricActorCritic(AsymmetricActorCritic):
+
+    def __init__(self, num_networks:int, in_features_act: int, in_features_only_cri:int, out_features: int, activation: str, rngs, net_arch: list, act_net_arch: list, cri_net_arch: list, add_logistic_to_actor: bool, normalize:bool, is_feature_normalizable: Sequence[bool] = None):
+
+        self.num_networks = num_networks
+
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap(in_axes=(0, None, None, None, None, 0, None, None, None, None, None, None))
+        def vmapped_fn(self, in_features_act: int, in_features_only_cri:int, out_features: int, activation: str, rngs, net_arch: list, act_net_arch: list, cri_net_arch: list, add_logistic_to_actor: bool, normalize:bool, is_feature_normalizable: Sequence[bool]):
+            super(StackedAsymmetricActorCritic, self).__init__(in_features_act, in_features_only_cri, out_features, activation, rngs, net_arch=net_arch, act_net_arch=act_net_arch, cri_net_arch=cri_net_arch, add_logistic_to_actor=add_logistic_to_actor, normalize=normalize, is_feature_normalizable=is_feature_normalizable)
+
+        vmapped_fn(self, in_features_act, in_features_only_cri, out_features, activation, rngs, net_arch, act_net_arch, cri_net_arch, add_logistic_to_actor, normalize, is_feature_normalizable)
+
+    def __call__(self, x, x_only_cri, return_cri=True):
+        @nnx.split_rngs(splits=self.num_networks)
+        @nnx.vmap(in_axes=(0, 0, 0, None))
+        def vmapped_fn(self, x, x_only_cri=None, return_cri=True):
+            # distrax does not support vmap well
+            # specifically distrax.MultivariateNormalDiag is cited in the README to give some problems
+            # so before leaving vmap I return the arrays needed to reconstruct the distribution outside
+            pi, val = super(StackedAsymmetricActorCritic, self).__call__(x, x_only_cri, return_cri)
+            return pi.loc, pi.scale_diag, val
+
+        pi_loc, pi_scale, val = vmapped_fn(self, x, x_only_cri, return_cri=return_cri)
         pi = distrax.MultivariateNormalDiag(pi_loc, pi_scale)
 
         # jax.debug.print('shape SAC: {x}', x=x.shape)
@@ -1137,3 +1235,381 @@ class RECActorCriticConcat(nnx.Module):
 
         return data
 
+class AsymmetricRECActorCritic(nnx.Module):
+    def __init__(self, obs_keys_act:tuple, obs_keys_cri:tuple, obs_is_local:dict, num_battery_agents: int, activation: str, rngs,
+                 net_arch: tuple=(), act_net_arch: tuple=None, cri_net_arch: tuple=None,
+                 non_shared_net_arch_before: tuple=(), non_shared_net_arch_after: tuple=(), passive_houses: bool=False,
+                 normalize:bool=False, is_obs_normalizable: Sequence[bool] = None):
+
+        if act_net_arch is None:
+            if net_arch is None:
+                raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
+            act_net_arch = net_arch
+        if cri_net_arch is None:
+            if net_arch is None:
+                raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
+            cri_net_arch = net_arch
+
+        self.obs_keys_act = obs_keys_act
+        self.obs_keys_cri = obs_keys_cri
+        self.obs_is_local = obs_is_local
+        self.num_battery_agents = num_battery_agents
+
+        in_features_act = len(obs_keys_act)
+        in_features_cri = len(obs_keys_cri)
+
+        self.normalize = normalize
+
+        self.normalize = normalize
+        if self.normalize:
+            print('norm rec')
+            self.norm_layer_act = RunningNorm(num_features=in_features_act, use_bias=False, use_scale=False, rngs=rngs)
+            self.norm_layer_cri = RunningNorm(num_features=in_features_cri, use_bias=False, use_scale=False, rngs=rngs)
+
+        self.passive_houses = passive_houses
+
+        act_net_arch = tuple(act_net_arch)
+        cri_net_arch = tuple(cri_net_arch)
+
+        activation = utils.activation_from_name(activation)
+
+        @nnx.split_rngs(splits=num_battery_agents)
+        @nnx.vmap(in_axes=(None, None, None, None, 0))
+        def stacked_layer(in_features, out_features, kernel_init, bias_init, rngs):
+            return nnx.Linear(in_features, out_features, kernel_init=kernel_init, bias_init=bias_init, rngs=rngs)
+
+        def build_layers(net_arch_before, net_arch, net_arch_after, in_features):
+
+            layers_before = []
+
+            last_len = in_features
+
+            if len(net_arch_before) != 0:
+                net_arch_before = (in_features,) + net_arch_before
+                last_len = net_arch_before[-1]
+
+                for i in range(len(net_arch_before) - 1):
+                    layers_before.append(stacked_layer(net_arch_before[i], net_arch_before[i+1],
+                                                                           kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+                    layers_before.append(activation)
+
+                if len(net_arch) == 0 and len(net_arch_after) == 0:
+                    layers_before.append(stacked_layer(net_arch_before[-1], 1,
+                                                                           kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
+
+            layers = []
+            if len(net_arch) != 0:
+                net_arch = (last_len,) + net_arch
+                last_len = net_arch[-1]
+                for i in range(len(net_arch) - 1):
+                    layers.append(
+                        nnx.Linear(net_arch[i], net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)),
+                                   bias_init=constant(0.), rngs=rngs))
+                    layers.append(activation)
+                if len(net_arch_after) == 0:
+                    layers.append(
+                        nnx.Linear(net_arch[-1], 1, kernel_init=orthogonal(0.01), bias_init=constant(0.),
+                                   rngs=rngs))
+
+            layers_after = []
+            if len(net_arch_after) != 0:
+                net_arch_after = (last_len,) + net_arch_after
+                for i in range(len(net_arch_after) - 1):
+                    layers_after.append(stacked_layer(net_arch_after[i], net_arch_after[i+1],
+                                                                          kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+                    layers_after.append(activation)
+                layers_after.append(stacked_layer(net_arch_after[-1], 1,
+                                                                      kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
+
+            return layers_before, layers, layers_after
+
+        self.act_layers_before, self.act_layers, self.act_layers_after = build_layers(non_shared_net_arch_before, act_net_arch, non_shared_net_arch_after, in_features_act)
+        self.cri_layers_before, self.cri_layers, self.cri_layers_after = build_layers(non_shared_net_arch_before, cri_net_arch, non_shared_net_arch_after, in_features_cri)
+
+        self.cri_finalize = []
+
+        self.cri_finalize.append(partial(jnp.squeeze, axis=-1))
+        # self.cri_finalize.append(nnx.Linear(num_battery_agents, 1, kernel_init=orthogonal(1.), bias_init=constant(0.),
+        #                rngs=rngs))
+        self.cri_finalize.append(partial(jnp.mean, axis=-1, keepdims=True))
+        # self.cri_finalize.append(partial(jnp.sum, axis=-1, keepdims=True))
+
+        self.activation = activation
+
+    def __call__(self, obs, return_cri=True, return_separate_cri=False):
+        data_act, data_cri = self.prepare_data(obs, return_cri=return_cri)
+
+        print('dataaa act', data_act.shape)
+        if return_cri:
+            print('dataaa cri', data_cri.shape)
+
+        # jax.debug.print('Shape Data: {x}', x=data.shape)
+
+        logit = data_act
+
+        logit = self.call_non_shared_layers(self.act_layers_before, logit)
+
+        for layer in self.act_layers:
+            logit = layer(logit)
+
+        logit = self.call_non_shared_layers(self.act_layers_after, logit)
+        logit = logit.squeeze(axis=-1)
+        print('logit', logit.shape)
+
+        alpha = nnx.softplus(logit) + 1e-3
+
+        # alpha = alpha.at[..., -1].set(1e-3)
+        # alpha = 10000. * nnx.sigmoid(logit).squeeze(axis=-1) + 1e-3
+        # alpha = jnp.clip(alpha, max=1e+4)
+
+        # jax.debug.print('alpha {x}', x=alpha, ordered=True)
+
+        pi = distrax.Dirichlet(alpha)
+
+        if return_cri:
+
+            critic = data_cri
+
+            critic = self.call_non_shared_layers(self.cri_layers_before, critic)
+            for layer in self.cri_layers:
+                critic = layer(critic)
+
+            critic = self.call_non_shared_layers(self.cri_layers_after, critic)
+
+            critic_separate =  jnp.squeeze(critic, axis=-1)
+
+            for layer in self.cri_finalize:
+                critic = layer(critic)
+
+            critic = jnp.squeeze(critic, axis=-1)
+        else:
+            critic = None
+
+        # jax.debug.print('critic {x}', x=critic, ordered=True)
+
+        if return_separate_cri:
+            return pi, critic, critic_separate
+        else:
+            return pi, critic
+
+    def call_non_shared_layers(self, layers, data):
+        @nnx.split_rngs(splits=self.num_battery_agents)
+        @nnx.vmap(in_axes=(0, -2), out_axes=-2)
+        def compute_layer(lay, data):
+            return lay(data)
+
+        out = data
+        for layer in layers:
+            if isinstance(layer, nnx.Module):
+                out = compute_layer(layer, out)
+            else:
+                out = layer(out)
+
+        return out
+
+    def prepare_mask(self, is_obs_normalizable):
+        mask = [is_obs_normalizable[key] for key in self.obs_keys if not self.obs_is_local[key]]
+        mask += [is_obs_normalizable[key] for key in self.obs_keys if self.obs_is_local[key]]
+        return mask
+
+    def prepare_data(self, obs, return_cri=True):
+
+        local_obs = [obs[key] for key in self.obs_keys_act if self.obs_is_local[key]]
+        global_obs = [obs[key] for key in self.obs_keys_act if not self.obs_is_local[key]]
+
+        local_data = jnp.stack(local_obs, axis=-1)
+        global_data = jnp.stack(global_obs, axis=-1)
+        global_data = jnp.expand_dims(global_data, -2)
+        global_data = jnp.repeat(global_data, self.num_battery_agents, axis=-2)
+
+        data_act = jnp.concatenate((global_data, local_data), axis=-1)
+
+        if self.normalize:
+            data_act = self.norm_layer_act(data_act)
+
+        if return_cri:
+            local_obs = [obs[key] for key in self.obs_keys_cri if self.obs_is_local[key]]
+            global_obs = [obs[key] for key in self.obs_keys_cri if not self.obs_is_local[key]]
+
+            local_data = jnp.stack(local_obs, axis=-1)
+            global_data = jnp.stack(global_obs, axis=-1)
+            global_data = jnp.expand_dims(global_data, -2)
+            global_data = jnp.repeat(global_data, self.num_battery_agents, axis=-2)
+
+            data_cri = jnp.concatenate((global_data, local_data), axis=-1)
+
+            if self.normalize:
+                data_cri = self.norm_layer_cri(data_cri)
+        else:
+            data_cri = None
+
+        return data_act, data_cri
+
+class AsymmetricRECActorCriticConcat(nnx.Module):
+    def __init__(self, obs_keys_act:tuple, obs_keys_cri:tuple, obs_is_local:dict, num_battery_agents: int, activation: str, rngs,
+                 net_arch: tuple=None, act_net_arch: tuple=None, cri_net_arch: tuple=None, passive_houses: bool=False,
+                 normalize:bool=False, is_obs_normalizable: Sequence[bool] = None):
+
+        if act_net_arch is None:
+            if net_arch is None:
+                raise ValueError("'net_arch' must be specified if 'act_net_arch' is None")
+            act_net_arch = net_arch
+        if cri_net_arch is None:
+            if net_arch is None:
+                raise ValueError("'net_arch' must be specified if 'cri_net_arch' is None")
+            cri_net_arch = net_arch
+
+        self.obs_keys_act = obs_keys_act
+        self.obs_keys_cri = obs_keys_cri
+        self.obs_is_local = obs_is_local
+        self.num_battery_agents = num_battery_agents
+
+        num_local_act = len([obs for obs in obs_keys_act if obs_is_local[obs]])
+        num_global_act = len(obs_keys_act) - num_local_act
+        in_features_act = num_local_act * num_battery_agents + num_global_act
+
+        num_local_cri = len([obs for obs in obs_keys_cri if obs_is_local[obs]])
+        num_global_cri = len(obs_keys_cri) - num_local_cri
+        in_features_cri = num_local_cri * num_battery_agents + num_global_cri
+
+        self.normalize = normalize
+
+        self.normalize = normalize
+        if self.normalize:
+            print('norm rec')
+            self.norm_layer_act = RunningNorm(num_features=in_features_act, use_bias=False, use_scale=False, rngs=rngs)
+            self.norm_layer_cri = RunningNorm(num_features=in_features_cri, use_bias=False, use_scale=False, rngs=rngs)
+
+        self.passive_houses = passive_houses
+
+        act_net_arch = tuple(act_net_arch)
+        cri_net_arch = tuple(cri_net_arch)
+
+        activation = utils.activation_from_name(activation)
+
+        act_net_arch = (in_features_act,) + act_net_arch + (num_battery_agents,)
+
+        self.act_layers = []
+        for i in range(len(act_net_arch) - 2):
+            self.act_layers.append(nnx.Linear(act_net_arch[i], act_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)),
+                                              bias_init=constant(0.), rngs=rngs))
+            self.act_layers.append(activation)
+        self.act_layers.append(
+            nnx.Linear(act_net_arch[-2], act_net_arch[-1], kernel_init=orthogonal(0.01), bias_init=constant(0.),
+                       rngs=rngs))
+
+        cri_net_arch = (in_features_cri,) + cri_net_arch + (1,)
+
+        self.cri_layers = []
+        for i in range(len(cri_net_arch) - 2):
+            self.cri_layers.append(nnx.Linear(cri_net_arch[i], cri_net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)),
+                                              bias_init=constant(0.), rngs=rngs))
+            self.cri_layers.append(activation)
+        self.cri_layers.append(
+            nnx.Linear(cri_net_arch[-2], cri_net_arch[-1], kernel_init=orthogonal(1.), bias_init=constant(0.),
+                       rngs=rngs))
+
+    def __call__(self, obs, return_cri=True):
+        data_act, data_cri = self.prepare_data(obs, return_cri=return_cri)
+
+        print('dataaa act', data_act.shape)
+        if return_cri:
+            print('dataaa cri', data_cri.shape)
+
+        # jax.debug.print('Shape Data: {x}', x=data.shape)
+
+        logit = data_act
+
+        for layer in self.act_layers:
+            logit = layer(logit)
+
+        print('logit', logit.shape)
+
+        alpha = nnx.softplus(logit) + 1e-3
+
+        # alpha = alpha.at[..., -1].set(1e-3)
+        # alpha = 10000. * nnx.sigmoid(logit).squeeze(axis=-1) + 1e-3
+        # alpha = jnp.clip(alpha, max=1e+4)
+
+        # jax.debug.print('alpha {x}', x=alpha, ordered=True)
+
+        pi = distrax.Dirichlet(alpha)
+
+        if return_cri:
+
+            critic = data_cri
+
+            for layer in self.cri_layers:
+                critic = layer(critic)
+
+            # jax.debug.print('critic {x}', x=critic, ordered=True)
+            critic = jnp.squeeze(critic, axis=-1)
+
+            print('critic', critic.shape)
+
+        else:
+            critic = None
+
+        return pi, critic
+
+
+    # def call_data(self, data):
+    #     logit = data
+    #
+    #     for layer in self.act_layers:
+    #         logit = layer(logit)
+    #
+    #     logit = logit.squeeze(axis=-1)
+    #     print('logit', logit.shape)
+    #
+    #     alpha = nnx.softplus(logit) + 1e-3
+    #
+    #     # alpha = alpha.at[..., -1].set(1e-3)
+    #     # alpha = 10000. * nnx.sigmoid(logit).squeeze(axis=-1) + 1e-3
+    #     # alpha = jnp.clip(alpha, max=1e+4)
+    #
+    #     # jax.debug.print('alpha {x}', x=alpha, ordered=True)
+    #
+    #     pi = distrax.Dirichlet(alpha)
+    #
+    #     critic = data
+    #
+    #     for layer in self.cri_layers:
+    #         critic = layer(critic)
+    #
+    #     # jax.debug.print('critic {x}', x=critic, ordered=True)
+    #
+    #     return alpha
+    #
+    #     # return pi, jnp.squeeze(critic, axis=-1)
+
+    def prepare_data(self, obs, return_cri=True):
+
+        local_obs_act = [obs[key] for key in self.obs_keys_act if self.obs_is_local[key]]
+        global_obs_act = [obs[key] for key in self.obs_keys_act if not self.obs_is_local[key]]
+
+        local_data_act = jnp.concat(local_obs_act, axis=-1)
+        global_data_act = jnp.stack(global_obs_act, axis=-1)
+
+        data_act = jnp.concatenate((global_data_act, local_data_act), axis=-1)
+
+        if self.normalize:
+            data_act = self.norm_layer_act(data_act)
+
+        if return_cri:
+
+            local_obs_cri = [obs[key] for key in self.obs_keys_cri if self.obs_is_local[key]]
+            global_obs_cri = [obs[key] for key in self.obs_keys_cri if not self.obs_is_local[key]]
+
+            local_data_cri = jnp.concat(local_obs_cri, axis=-1)
+            global_data_cri = jnp.stack(global_obs_cri, axis=-1)
+
+            data_cri = jnp.concatenate((global_data_cri, local_data_cri), axis=-1)
+
+            if self.normalize:
+                data_cri = self.norm_layer_cri(data_cri)
+
+        else:
+            data_cri = None
+
+        return data_act, data_cri

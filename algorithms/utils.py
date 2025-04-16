@@ -11,9 +11,10 @@ import flax.nnx as nnx
 import pickle
 import lzma
 
-from algorithms.networks import (ActorCritic, RecurrentActorCritic, StackedActorCritic,
-                                 StackedRecurrentActorCritic,
-                                 RECActorCritic, RECRecurrentActorCritic, RECActorCriticConcat)
+from algorithms.networks import (ActorCritic, RecurrentActorCritic, AsymmetricActorCritic, StackedActorCritic,
+                                 StackedRecurrentActorCritic,StackedAsymmetricActorCritic,
+                                 RECActorCritic, RECRecurrentActorCritic, RECActorCriticConcat,
+                                 AsymmetricRECActorCritic, AsymmetricRECActorCriticConcat)
 
 
 path_base = '/trained_agents/'
@@ -87,12 +88,26 @@ def construct_battery_net_from_config_multi_agent(config, rng, num_nets=None, ob
     if num_nets is None:
         num_nets = config['NUM_BATTERY_AGENTS']
     if obs_space_size is None:
-        obs_space_size = config['BATTERY_OBSERVATION_SPACE_SIZE']
+        obs_space_size = config.get('BATTERY_OBSERVATION_SPACE_SIZE', config['BATTERY_OBSERVATION_SPACE_SIZE_ACT'])
 
     if config['NETWORK_TYPE_BATTERIES'] == 'actor_critic':
         return StackedActorCritic(
             num_nets,
             obs_space_size,
+            config["BATTERY_ACTION_SPACE_SIZE"],
+            activation=config["ACTIVATION"],
+            net_arch=(config['NET_ARCH_BATTERIES'] if 'NET_ARCH_BATTERIES' in config.keys() else config.get("NET_ARCH")),
+            act_net_arch=(config['ACT_NET_ARCH_BATTERIES'] if 'ACT_NET_ARCH_BATTERIES' in config.keys() else config.get("ACT_NET_ARCH")),
+            cri_net_arch=(config['CRI_NET_ARCH_BATTERIES'] if 'CRI_NET_ARCH_BATTERIES' in config.keys() else config.get("CRI_NET_ARCH")),
+            add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
+            normalize=config["NORMALIZE_NN_INPUTS"],
+            # is_feature_normalizable=config['BATTERY_OBS_IS_NORMALIZABLE'],
+            rngs=rng)
+    elif config['NETWORK_TYPE_BATTERIES'] == 'asymmetric_actor_critic':
+        return StackedAsymmetricActorCritic(
+            num_nets,
+            obs_space_size,
+            config['BATTERY_OBSERVATION_SPACE_SIZE_ONLY_CRI'],
             config["BATTERY_ACTION_SPACE_SIZE"],
             activation=config["ACTIVATION"],
             net_arch=(config['NET_ARCH_BATTERIES'] if 'NET_ARCH_BATTERIES' in config.keys() else config.get("NET_ARCH")),
@@ -173,6 +188,36 @@ def construct_rec_net_from_config_multi_agent(config, rng):
                                        )
     elif config['NETWORK_TYPE_REC'] == 'actor_critic_concat':
         return RECActorCriticConcat(config['REC_OBS_KEYS'],
+                                    config['REC_OBS_IS_LOCAL'],
+                                    config['NUM_BATTERY_AGENTS'],
+                                    config['ACTIVATION'],
+                                    rngs=rng,
+                                    net_arch=(config['NET_ARCH_REC'] if 'NET_ARCH_REC' in config.keys() else config.get("NET_ARCH")),
+                                    act_net_arch=(config['ACT_NET_ARCH_REC'] if 'ACT_NET_ARCH_REC' in config.keys() else config.get("ACT_NET_ARCH")),
+                                    cri_net_arch=(config['CRI_NET_ARCH_REC'] if 'CRI_NET_ARCH_REC' in config.keys() else config.get("CRI_NET_ARCH")),
+                                    passive_houses=config['PASSIVE_HOUSES'],
+                                    normalize=config["NORMALIZE_NN_INPUTS"],
+                                    # is_obs_normalizable=config['REC_OBS_IS_NORMALIZABLE']
+                                    )
+    elif config['NETWORK_TYPE_REC'] == 'asymmetric_actor_critic':
+        return AsymmetricRECActorCritic(config['REC_OBS_KEYS_ACT'],
+                              config['REC_OBS_KEYS_CRI'],
+                              config['REC_OBS_IS_LOCAL'],
+                              config['NUM_BATTERY_AGENTS'],
+                              config['ACTIVATION'],
+                              rngs=rng,
+                              net_arch=(config['NET_ARCH_REC'] if 'NET_ARCH_REC' in config.keys() else config.get("NET_ARCH", ())),
+                              act_net_arch=(config['ACT_NET_ARCH_REC'] if 'ACT_NET_ARCH_REC' in config.keys() else config.get("ACT_NET_ARCH")),
+                              cri_net_arch=(config['CRI_NET_ARCH_REC'] if 'CRI_NET_ARCH_REC' in config.keys() else config.get("CRI_NET_ARCH")),
+                              passive_houses=config['PASSIVE_HOUSES'],
+                              normalize=config["NORMALIZE_NN_INPUTS"],
+                              non_shared_net_arch_before=config.get("NON_SHARED_NET_ARCH_BEFORE", ()),
+                              non_shared_net_arch_after=config.get("NON_SHARED_NET_ARCH_AFTER", ()),
+                              # is_obs_normalizable=config['REC_OBS_IS_NORMALIZABLE']
+                              )
+    elif config['NETWORK_TYPE_REC'] == 'asymmetric_actor_critic_concat':
+        return AsymmetricRECActorCriticConcat(config['REC_OBS_KEYS_ACT'],
+                                    config['REC_OBS_KEYS_CRI'],
                                     config['REC_OBS_IS_LOCAL'],
                                     config['NUM_BATTERY_AGENTS'],
                                     config['ACTIVATION'],
