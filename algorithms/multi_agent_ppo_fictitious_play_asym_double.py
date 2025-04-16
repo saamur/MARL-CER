@@ -108,8 +108,8 @@ def make_train(config, env:RECEnv, network_batteries=None):
         config['ENT_COEF_BATTERIES'] = config['ENT_COEF']
 
     config['REC_ACTION_SPACE_SIZE'] = env.action_space(env.rec_agent).shape[0]
-    config['REC_OBS_KEYS_ACT'] = tuple(env._obs_rec_keys)
-    config['REC_OBS_KEYS_CRI'] = tuple(env._obs_rec_keys + ['values_batteries'])
+    config['REC_OBS_KEYS_ACT'] = tuple(env.obs_rec_keys)
+    config['REC_OBS_KEYS_CRI'] = tuple(env.obs_rec_keys + ['values_batteries'])
     config['NUM_BATTERY_AGENTS'] = env.num_battery_agents
     config['PASSIVE_HOUSES'] = (env.num_passive_houses>0)
     config['REC_OBS_IS_SEQUENCE'] = {**env.obs_is_sequence_rec, 'values_batteries': True}

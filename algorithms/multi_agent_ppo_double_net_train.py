@@ -87,7 +87,7 @@ def make_train(config, env:RECEnv):
     config['OBS_NET_ONLY_LOCAL'] = tuple([obs for i, obs in enumerate(env._obs_battery_agents_keys) if env.obs_is_local_battery[i]])
 
     config['REC_ACTION_SPACE_SIZE'] = env.action_space(env.rec_agent).shape[0]
-    config['REC_OBS_KEYS'] = tuple(env._obs_rec_keys) + ('action_diff_only_local',)
+    config['REC_OBS_KEYS'] = tuple(env.obs_rec_keys) + ('action_diff_only_local',)
     config['NUM_BATTERY_AGENTS'] = env.num_battery_agents
     config['PASSIVE_HOUSES'] = (env.num_passive_houses>0)
     config['REC_OBS_IS_SEQUENCE'] = env.obs_is_sequence_rec

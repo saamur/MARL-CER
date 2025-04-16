@@ -197,7 +197,28 @@ class RECEnv(MultiAgentEnv):
         # self.observation_spaces = OrderedDict([(a, OrderedDict()) for a in self.agents])
         self.battery_obs_space = OrderedDict()
 
-        self._obs_battery_agents_keys = ['temperature', 'soc', 'demand', 'generation', 'buying_price', 'selling_price']
+        self.obs_battery_agents_keys = ['temperature', 'soc', 'demand', 'generation', 'buying_price', 'selling_price']
+
+        self.obs_is_sequence_battery = {'temperature': True,
+                                        'soc': True,
+                                        'demand': True,
+                                        'generation': True,
+                                        'buying_price': True,
+                                        'selling_price': True}
+
+        self.obs_is_local_battery = {'temperature': True,
+                                     'soc': True,
+                                     'demand': True,
+                                     'generation': True,
+                                     'buying_price': True,
+                                     'selling_price': True}
+
+        self.obs_is_normalizable_battery = {'temperature': True,
+                                            'soc': False,
+                                            'demand': True,
+                                            'generation': True,
+                                            'buying_price': True,
+                                            'selling_price': True}
 
         self.battery_obs_space['temperature'] = {'low': 250., 'high': 400.}
         self.battery_obs_space['soc'] = {'low': 0., 'high': 1.}
@@ -205,9 +226,6 @@ class RECEnv(MultiAgentEnv):
         self.battery_obs_space['generation'] = {'low': 0., 'high': jnp.inf}
         self.battery_obs_space['buying_price'] = {'low': 0., 'high': jnp.inf}
         self.battery_obs_space['selling_price'] = {'low': 0., 'high': jnp.inf}
-        obs_is_sequence = [True, True, True, True, True, True]
-        self.obs_is_local_battery = [True, True, True, True, True, True]
-        self.obs_is_normalizable_battery = [True, False, True, True, True, True]
 
         # for a in self.battery_agents:
         #     self.observation_spaces[a]['temperature'] = spaces.Box(low=250., high=400., shape=(1,))
@@ -220,40 +238,40 @@ class RECEnv(MultiAgentEnv):
         # Add optional 'State of Health' in observation space
         if 'soh' in settings['battery_obs']:
             # spaces['soh'] = Box(low=0, high=1, shape=(1,), dtype=np.float32)
-            self._obs_battery_agents_keys.append('soh')
+            self.obs_battery_agents_keys.append('soh')
             self.battery_obs_space['soh'] = {'low': 0., 'high': 1.}
-            obs_is_sequence.append(True)
-            self.obs_is_local_battery.append(True)
-            self.obs_is_normalizable_battery.append(False)
+            self.obs_is_sequence_battery['soh'] = True
+            self.obs_is_local_battery['soh'] = True
+            self.obs_is_normalizable_battery['soh'] = False
 
         if 'day_of_year' in settings['battery_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-            self._obs_battery_agents_keys.append('sin_day_of_year')
-            self._obs_battery_agents_keys.append('cos_day_of_year')
+            self.obs_battery_agents_keys.append('sin_day_of_year')
+            self.obs_battery_agents_keys.append('cos_day_of_year')
             self.battery_obs_space['sin_day_of_year'] = {'low': -1, 'high': 1}
             self.battery_obs_space['cos_day_of_year'] = {'low': -1, 'high': 1}
-            obs_is_sequence.append(False)
-            obs_is_sequence.append(False)
-            self.obs_is_local_battery.append(True)
-            self.obs_is_local_battery.append(True)
-            self.obs_is_normalizable_battery.append(False)
-            self.obs_is_normalizable_battery.append(False)
+            self.obs_is_sequence_battery['sin_day_of_year'] = False
+            self.obs_is_sequence_battery['cos_day_of_year'] = False
+            self.obs_is_local_battery['sin_day_of_year'] = True
+            self.obs_is_local_battery['cos_day_of_year'] = True
+            self.obs_is_normalizable_battery['sin_day_of_year'] = False
+            self.obs_is_normalizable_battery['cos_day_of_year'] = False
 
         if 'seconds_of_day' in settings['battery_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-            self._obs_battery_agents_keys.append('sin_seconds_of_day')
-            self._obs_battery_agents_keys.append('cos_seconds_of_day')
+            self.obs_battery_agents_keys.append('sin_seconds_of_day')
+            self.obs_battery_agents_keys.append('cos_seconds_of_day')
             self.battery_obs_space['sin_seconds_of_day'] = {'low': -1, 'high': 1}
             self.battery_obs_space['cos_seconds_of_day'] = {'low': -1, 'high': 1}
-            obs_is_sequence.append(False)
-            obs_is_sequence.append(False)
-            self.obs_is_local_battery.append(True)
-            self.obs_is_local_battery.append(True)
-            self.obs_is_normalizable_battery.append(False)
-            self.obs_is_normalizable_battery.append(False)
+            self.obs_is_sequence_battery['sin_seconds_of_day'] = False
+            self.obs_is_sequence_battery['cos_seconds_of_day'] = False
+            self.obs_is_local_battery['sin_seconds_of_day'] = True
+            self.obs_is_local_battery['cos_seconds_of_day'] = True
+            self.obs_is_normalizable_battery['sin_seconds_of_day'] = False
+            self.obs_is_normalizable_battery['cos_seconds_of_day'] = False
 
         # if 'energy_level' in settings['battery_obs']:
-        #     self._obs_battery_agents_keys.append('energy_level')
+        #     self.obs_battery_agents_keys.append('energy_level')
         #     for i, a in enumerate(self.battery_agents):
         #         min_energy = batteries[i].nominal_capacity * batteries[i].soc_state.soc_min * batteries[i].v_max
         #         max_energy = batteries[i].nominal_capacity * batteries[i].soc_state.soc_max * batteries[i].v_min
@@ -261,61 +279,67 @@ class RECEnv(MultiAgentEnv):
 
 
         if 'network_REC_plus' in settings['battery_obs']:
-            self._obs_battery_agents_keys.append('network_REC_plus')
+            self.obs_battery_agents_keys.append('network_REC_plus')
             self.battery_obs_space['network_REC_plus'] = {'low': 0, 'high': jnp.inf}
-            obs_is_sequence.append(True)
-            self.obs_is_local_battery.append(False)
-            self.obs_is_normalizable_battery.append(True)
+            self.obs_is_sequence_battery['network_REC_plus'] = True
+            self.obs_is_local_battery['network_REC_plus'] = False
+            self.obs_is_normalizable_battery['network_REC_plus'] = True
 
         if 'network_REC_minus' in settings['battery_obs']:
-            self._obs_battery_agents_keys.append('network_REC_minus')
+            self.obs_battery_agents_keys.append('network_REC_minus')
             self.battery_obs_space['network_REC_minus'] = {'low': 0, 'high': jnp.inf}
-            obs_is_sequence.append(True)
-            self.obs_is_local_battery.append(False)
-            self.obs_is_normalizable_battery.append(True)
+            self.obs_is_sequence_battery['network_REC_minus'] = True
+            self.obs_is_local_battery['network_REC_minus'] = False
+            self.obs_is_normalizable_battery['network_REC_minus'] = True
 
         if 'network_REC_diff' in settings['battery_obs']:
-            self._obs_battery_agents_keys.append('network_REC_diff')
+            self.obs_battery_agents_keys.append('network_REC_diff')
             self.battery_obs_space['network_REC_diff'] = {'low': -jnp.inf, 'high': jnp.inf}
-            obs_is_sequence.append(True)
-            self.obs_is_local_battery.append(False)
-            self.obs_is_normalizable_battery.append(True)
+            self.obs_is_sequence_battery['network_REC_diff'] = True
+            self.obs_is_local_battery['network_REC_diff'] = False
+            self.obs_is_normalizable_battery['network_REC_diff'] = True
 
         if 'self_consumption_marginal_contribution' in settings['battery_obs']:
-            self._obs_battery_agents_keys.append('self_consumption_marginal_contribution')
+            self.obs_battery_agents_keys.append('self_consumption_marginal_contribution')
             self.battery_obs_space['self_consumption_marginal_contribution'] = {'low': 0, 'high': jnp.inf}
-            obs_is_sequence.append(True)
-            self.obs_is_local_battery.append(False)
-            self.obs_is_normalizable_battery.append(True)
+            self.obs_is_sequence_battery['self_consumption_marginal_contribution'] = True
+            self.obs_is_local_battery['self_consumption_marginal_contribution'] = False
+            self.obs_is_normalizable_battery['self_consumption_marginal_contribution'] = True
 
         if 'rec_actions_prev_step' in settings['battery_obs']:
-            self._obs_battery_agents_keys.append('rec_actions_prev_step')
+            self.obs_battery_agents_keys.append('rec_actions_prev_step')
             self.battery_obs_space['rec_actions_prev_step'] = {'low': 0, 'high': 1}
-            obs_is_sequence.append(True)
-            self.obs_is_local_battery.append(False)
-            self.obs_is_normalizable_battery.append(True)
+            self.obs_is_sequence_battery['rec_actions_prev_step'] = True
+            self.obs_is_local_battery['rec_actions_prev_step'] = False
+            self.obs_is_normalizable_battery['rec_actions_prev_step'] = True
 
 
-        indices = np.argsort(np.logical_not(obs_is_sequence))
+        # indices = np.argsort(np.logical_not(obs_is_sequence))
+        #
+        # self.obs_battery_agents_keys = [self.obs_battery_agents_keys[i] for i in indices]
+        # self.obs_is_normalizable_battery = [self.obs_is_normalizable_battery[i] for i in indices]
+        # self.obs_is_local_battery = [self.obs_is_local_battery[i] for i in indices]
+        # self.obs_is_sequence_battery = [obs_is_sequence[i] for i in indices]
 
-        self._obs_battery_agents_keys = [self._obs_battery_agents_keys[i] for i in indices]
-        self.obs_is_normalizable_battery = [self.obs_is_normalizable_battery[i] for i in indices]
-        self.obs_is_local_battery = [self.obs_is_local_battery[i] for i in indices]
-        self.obs_is_sequence_battery = [obs_is_sequence[i] for i in indices]
+        # self.num_battery_obs_sequences = np.sum(obs_is_sequence)
 
-        self.num_battery_obs_sequences = np.sum(obs_is_sequence)
+        # self._obs_battery_agents_idx = {key: i for i, key in enumerate(self.obs_battery_agents_keys)}
 
-        self._obs_battery_agents_idx = {key: i for i, key in enumerate(self._obs_battery_agents_keys)}
-
-        self.observation_spaces = OrderedDict([(a, spaces.Box(jnp.array([self.battery_obs_space[key]['low'] for key in self._obs_battery_agents_keys]),
-                                                              jnp.array([self.battery_obs_space[key]['high'] for key in self._obs_battery_agents_keys]),
-                                                              shape=(len(self._obs_battery_agents_keys),)))
+        self.observation_spaces = OrderedDict([(a, spaces.Dict({key: spaces.Box(self.battery_obs_space[key]['low'],
+                                                                                self.battery_obs_space[key]['high'],
+                                                                                shape=(1,))
+                                                                 for key in self.obs_battery_agents_keys}))
                                                for a in self.battery_agents])
 
-        print(self._obs_battery_agents_keys)
+        # self.observation_spaces = OrderedDict([(a, spaces.Box(jnp.array([self.battery_obs_space[key]['low'] for key in self.obs_battery_agents_keys]),
+        #                                                       jnp.array([self.battery_obs_space[key]['high'] for key in self.obs_battery_agents_keys]),
+        #                                                       shape=(len(self.obs_battery_agents_keys),)))
+        #                                        for a in self.battery_agents])
+
+        print(self.obs_battery_agents_keys)
 
 
-        self._obs_rec_keys = ['demands_base_battery_houses', 'demands_battery_battery_houses', 'generations_battery_houses']
+        self.obs_rec_keys = ['demands_base_battery_houses', 'demands_battery_battery_houses', 'generations_battery_houses']
 
         self.obs_is_sequence_rec = {'demands_base_battery_houses':True,
                                     'demands_battery_battery_houses':True,
@@ -336,55 +360,55 @@ class RECEnv(MultiAgentEnv):
 
         if self.num_passive_houses > 0:
             if 'demands_passive_houses' in settings['rec_obs']:
-                self._obs_rec_keys.append('demands_passive_houses')
+                self.obs_rec_keys.append('demands_passive_houses')
                 rec_obs_space['demands_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
                 self.obs_is_sequence_rec['demands_passive_houses'] = True
                 self.obs_is_local_rec['demands_passive_houses'] = True
                 self.obs_is_normalizable_rec['demands_passive_houses'] = True
             if 'generations_passive_houses' in settings['rec_obs']:
-                self._obs_rec_keys.append('generations_passive_houses')
+                self.obs_rec_keys.append('generations_passive_houses')
                 rec_obs_space['generations_passive_houses'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_passive_houses,))
                 self.obs_is_sequence_rec['generations_passive_houses'] = True
                 self.obs_is_local_rec['generations_passive_houses'] = True
                 self.obs_is_normalizable_rec['generations_passive_houses'] = True
 
         if 'tot_demands_base' in settings['rec_obs']:
-            self._obs_rec_keys.append('tot_demands_base')
+            self.obs_rec_keys.append('tot_demands_base')
             rec_obs_space['tot_demands_base'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['tot_demands_base'] = True
             self.obs_is_local_rec['tot_demands_base'] = False
             self.obs_is_normalizable_rec['tot_demands_base'] = True
 
         if 'tot_demands_batteries' in settings['rec_obs']:
-            self._obs_rec_keys.append('tot_demands_batteries')
+            self.obs_rec_keys.append('tot_demands_batteries')
             rec_obs_space['tot_demands_batteries'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['tot_demands_batteries'] = True
             self.obs_is_local_rec['tot_demands_batteries'] = False
             self.obs_is_normalizable_rec['tot_demands_batteries'] = True
 
         if 'tot_generations' in settings['rec_obs']:
-            self._obs_rec_keys.append('tot_generations')
+            self.obs_rec_keys.append('tot_generations')
             rec_obs_space['tot_generations'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['tot_generations'] = True
             self.obs_is_local_rec['tot_generations'] = False
             self.obs_is_normalizable_rec['tot_generations'] = True
 
         if 'mean_demands_base' in settings['rec_obs']:
-            self._obs_rec_keys.append('mean_demands_base')
+            self.obs_rec_keys.append('mean_demands_base')
             rec_obs_space['mean_demands_base'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['mean_demands_base'] = True
             self.obs_is_local_rec['mean_demands_base'] = False
             self.obs_is_normalizable_rec['mean_demands_base'] = True
 
         if 'mean_demands_batteries' in settings['rec_obs']:
-            self._obs_rec_keys.append('mean_demands_batteries')
+            self.obs_rec_keys.append('mean_demands_batteries')
             rec_obs_space['mean_demands_batteries'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['mean_demands_batteries'] = True
             self.obs_is_local_rec['mean_demands_batteries'] = False
             self.obs_is_normalizable_rec['mean_demands_batteries'] = True
 
         if 'mean_generations' in settings['rec_obs']:
-            self._obs_rec_keys.append('mean_generations')
+            self.obs_rec_keys.append('mean_generations')
             rec_obs_space['mean_generations'] = spaces.Box(low=0., high=jnp.inf, shape=(1,))
             self.obs_is_sequence_rec['mean_generations'] = True
             self.obs_is_local_rec['mean_generations'] = False
@@ -392,8 +416,8 @@ class RECEnv(MultiAgentEnv):
 
         if 'day_of_year' in settings['rec_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-            self._obs_rec_keys.append('sin_day_of_year')
-            self._obs_rec_keys.append('cos_day_of_year')
+            self.obs_rec_keys.append('sin_day_of_year')
+            self.obs_rec_keys.append('cos_day_of_year')
             rec_obs_space['sin_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
             rec_obs_space['cos_day_of_year'] = spaces.Box(low=-1., high=1., shape=(1,))
             self.obs_is_sequence_rec.update({'sin_day_of_year': False, 'cos_day_of_year': False})
@@ -401,8 +425,8 @@ class RECEnv(MultiAgentEnv):
             self.obs_is_normalizable_rec.update({'sin_day_of_year': False, 'cos_day_of_year': False})
         if 'seconds_of_day' in settings['rec_obs']:
             # spaces['day_of_year'] = Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-            self._obs_rec_keys.append('sin_seconds_of_day')
-            self._obs_rec_keys.append('cos_seconds_of_day')
+            self.obs_rec_keys.append('sin_seconds_of_day')
+            self.obs_rec_keys.append('cos_seconds_of_day')
             rec_obs_space['sin_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
             rec_obs_space['cos_seconds_of_day'] = spaces.Box(low=-1., high=1., shape=(1,))
             self.obs_is_sequence_rec.update({'sin_seconds_of_day': False, 'cos_seconds_of_day': False})
@@ -410,42 +434,42 @@ class RECEnv(MultiAgentEnv):
             self.obs_is_normalizable_rec.update({'sin_seconds_of_day': False, 'cos_seconds_of_day': False})
 
         if 'network_REC_plus' in settings['rec_obs']:
-            self._obs_rec_keys.append('network_REC_plus')
+            self.obs_rec_keys.append('network_REC_plus')
             rec_obs_space['network_REC_plus'] = {'low': 0, 'high': jnp.inf}
             self.obs_is_sequence_rec['network_REC_plus'] = True
             self.obs_is_local_rec['network_REC_plus'] = False
             self.obs_is_normalizable_rec['network_REC_plus'] = True
 
         if 'network_REC_minus' in settings['rec_obs']:
-            self._obs_rec_keys.append('network_REC_minus')
+            self.obs_rec_keys.append('network_REC_minus')
             rec_obs_space['network_REC_minus'] = {'low': 0, 'high': jnp.inf}
             self.obs_is_sequence_rec['network_REC_minus'] = True
             self.obs_is_local_rec['network_REC_minus'] = False
             self.obs_is_normalizable_rec['network_REC_minus'] = True
 
         if 'network_REC_diff' in settings['rec_obs']:
-            self._obs_rec_keys.append('network_REC_diff')
+            self.obs_rec_keys.append('network_REC_diff')
             rec_obs_space['network_REC_diff'] = {'low': -jnp.inf, 'high': jnp.inf}
             self.obs_is_sequence_rec['network_REC_diff'] = True
             self.obs_is_local_rec['network_REC_diff'] = False
             self.obs_is_normalizable_rec['network_REC_diff'] = True
 
         if 'rec_actions_prev_step' in settings['rec_obs']:
-            self._obs_rec_keys.append('rec_actions_prev_step')
+            self.obs_rec_keys.append('rec_actions_prev_step')
             rec_obs_space['rec_actions_prev_step'] = spaces.Box(low=0., high=1., shape=(self.num_battery_agents,))
             self.obs_is_sequence_rec['rec_actions_prev_step'] = True
             self.obs_is_local_rec['rec_actions_prev_step'] = True
             self.obs_is_normalizable_rec['rec_actions_prev_step'] = False
 
         if 'exponential_average_rec_actions_prev_step' in settings['rec_obs']:
-            self._obs_rec_keys.append('exponential_average_rec_actions_prev_step')
+            self.obs_rec_keys.append('exponential_average_rec_actions_prev_step')
             rec_obs_space['exponential_average_rec_actions_prev_step'] = spaces.Box(low=0., high=1., shape=(self.num_battery_agents,))
             self.obs_is_sequence_rec['exponential_average_rec_actions_prev_step'] = False
             self.obs_is_local_rec['exponential_average_rec_actions_prev_step'] = True
             self.obs_is_normalizable_rec['exponential_average_rec_actions_prev_step'] = False
 
         if 'battery_agents_marginal_contribution' in settings['rec_obs']:
-            self._obs_rec_keys.append('battery_agents_marginal_contribution')
+            self.obs_rec_keys.append('battery_agents_marginal_contribution')
             rec_obs_space['battery_agents_marginal_contribution'] = spaces.Box(low=0., high=jnp.inf, shape=(self.num_battery_agents,))
             self.obs_is_sequence_rec['battery_agents_marginal_contribution'] = True
             self.obs_is_local_rec['battery_agents_marginal_contribution'] = True
@@ -453,7 +477,7 @@ class RECEnv(MultiAgentEnv):
 
         # self._obs_rec_keys = tuple(self._obs_rec_keys)
 
-        print(self._obs_rec_keys)
+        print(self.obs_rec_keys)
 
         self.observation_spaces[self.rec_agent] = spaces.Dict(rec_obs_space)
 
@@ -559,79 +583,76 @@ class RECEnv(MultiAgentEnv):
             soc = state.battery_states.soc_state.soc
             balance_plus, balance_minus = self._calc_balances(state, past_shift=self.env_step)
 
-            obs_list = []
+            obs_array = {}
 
-            for key in self._obs_battery_agents_keys:
+            for key in self.obs_battery_agents_keys:
                 match key:
                     case 'temperature':
-                        obs_list.append(temperatures)
+                        obs_array['temperature'] = temperatures
                     case 'soc':
-                        obs_list.append(soc)
+                        obs_array['soc'] = soc
                     case 'soh':
-                        obs_list.append(state.battery_states.soh)
+                        obs_array['soh'] = state.battery_states.soh
                     case 'demand':
-                        obs_list.append(demands_batteries)
+                        obs_array['demand'] = demands_batteries
                     case 'generation':
-                        obs_list.append(generations_batteries)
+                        obs_array['generation'] = generations_batteries
                     case 'buying_price':
-                        obs_list.append(buying_price_batteries)
+                        obs_array['buying_price'] = buying_price_batteries
                     case 'selling_price':
-                        obs_list.append(selling_price_batteries)
+                        obs_array['selling_price'] = selling_price_batteries
                     case 'sin_day_of_year':
-                        obs_list.append(jnp.full(shape=(self.num_battery_agents,),
-                                                 fill_value=jnp.sin(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe)))
+                        obs_array['sin_day_of_year'] = jnp.full(shape=(self.num_battery_agents,),
+                                                 fill_value=jnp.sin(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe))
                     case 'cos_day_of_year':
-                        obs_list.append(jnp.full(shape=(self.num_battery_agents,),
-                                                 fill_value=jnp.cos(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe)))
+                        obs_array['cos_day_of_year'] = jnp.full(shape=(self.num_battery_agents,),
+                                                 fill_value=jnp.cos(2 * jnp.pi / (self.SECONDS_PER_DAY * self.DAYS_PER_YEAR) * state.timeframe))
                     case 'sin_seconds_of_day':
-                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.sin(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)))
+                        obs_array['sin_seconds_of_day'] = jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.sin(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe))
                     case 'cos_seconds_of_day':
-                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.cos(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe)))
+                        obs_array['cos_seconds_of_day'] = jnp.full(shape=(self.num_battery_agents,), fill_value=jnp.cos(2 * jnp.pi / self.SECONDS_PER_DAY * state.timeframe))
                     case 'network_REC_plus':
-                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus))
+                        obs_array['network_REC_plus'] = jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus)
                     case 'network_REC_minus':
-                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=balance_minus))
+                        obs_array['network_REC_minus'] = jnp.full(shape=(self.num_battery_agents,), fill_value=balance_minus)
                     case 'network_REC_diff':
-                        obs_list.append(jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus-balance_minus))
+                        obs_array['network_REC_diff'] = jnp.full(shape=(self.num_battery_agents,), fill_value=balance_plus-balance_minus)
                     case 'self_consumption_marginal_contribution':
-                        obs_list.append(self._calc_marginal_contributions(state))
+                        obs_array['self_consumption_marginal_contribution'] = self._calc_marginal_contributions(state)
                     case 'rec_actions_prev_step':
-                        obs_list.append(state.prev_actions_rec)
+                        obs_array['rec_actions_prev_step'] = state.prev_actions_rec
 
-            obs_mat = jnp.array(obs_list)
-
-            obs = {a: obs_mat[:, i] for i, a in enumerate(self.battery_agents)}
-
+            obs = {a: jax.tree.map(lambda x: x[i], obs_array) for i, a in enumerate(self.battery_agents)}
 
             rec_obs = {'demands_base_battery_houses': jnp.zeros(self.num_battery_agents),
                        'demands_battery_battery_houses': jnp.zeros(self.num_battery_agents),
                        'generations_battery_houses': jnp.zeros(self.num_battery_agents)}
 
             if self.num_passive_houses > 0:
-                if 'demands_passive_houses' in self._obs_rec_keys:
+                if 'demands_passive_houses' in self.obs_rec_keys:
                     rec_obs['demands_passive_houses'] = jnp.zeros(self.num_passive_houses)
-                if 'generations_passive_houses' in self._obs_rec_keys:
+                if 'generations_passive_houses' in self.obs_rec_keys:
                     rec_obs['generations_passive_houses'] = jnp.zeros(self.num_passive_houses)
 
-            if 'rec_actions_prev_step' in self._obs_rec_keys:
+            if 'rec_actions_prev_step' in self.obs_rec_keys:
                 rec_obs['rec_actions_prev_step'] = jnp.zeros(self.num_battery_agents)
 
-            if 'exponential_average_rec_actions_prev_step' in self._obs_rec_keys:
+            if 'exponential_average_rec_actions_prev_step' in self.obs_rec_keys:
                 rec_obs['exponential_average_rec_actions_prev_step'] = jnp.zeros(self.num_battery_agents)
 
-            if 'battery_agents_marginal_contribution' in self._obs_rec_keys:
+            if 'battery_agents_marginal_contribution' in self.obs_rec_keys:
                 rec_obs['battery_agents_marginal_contribution'] = jnp.zeros(self.num_battery_agents)
 
-            for o in [key for key in self._obs_rec_keys if not self.obs_is_local_rec[key]]:
+            for o in [key for key in self.obs_rec_keys if not self.obs_is_local_rec[key]]:
                 rec_obs[o] = 0.
             obs[self.rec_agent] = rec_obs
 
             return obs
 
         def rec_turn():
-            obs_battery_agents = jnp.zeros((len(self._obs_battery_agents_keys),))
+            # obs_battery_agents = jnp.zeros((len(self.obs_battery_agents_keys),))
 
-            obs = {a: obs_battery_agents for a in self.battery_agents}
+            obs = {a: {key: 0. for key in self.obs_battery_agents_keys} for a in self.battery_agents}
 
             rec_obs = {'demands_base_battery_houses': demands_batteries,
                        'demands_battery_battery_houses': state.battery_states.electrical_state.p,
@@ -639,7 +660,7 @@ class RECEnv(MultiAgentEnv):
 
             balance_plus, balance_minus = self._calc_balances(state)
 
-            for key in self._obs_rec_keys:
+            for key in self.obs_rec_keys:
                 match key:
                     case 'tot_demands_base':
                         rec_obs['tot_demands_base'] = demands_batteries.sum()
@@ -681,17 +702,17 @@ class RECEnv(MultiAgentEnv):
             if self.num_passive_houses > 0:
                 passive_demands = self._get_demands(state.demands_passive_houses, state.timeframe)
                 passive_generation = self._get_generations(self.generations_passive_houses, state.timeframe)
-                if 'demands_passive_houses' in self._obs_rec_keys:
+                if 'demands_passive_houses' in self.obs_rec_keys:
                     rec_obs['demand_passive_houses'] = passive_demands
-                if 'generations_passive_houses' in self._obs_rec_keys:
+                if 'generations_passive_houses' in self.obs_rec_keys:
                     rec_obs['generations_passive_houses'] = passive_generation
-                if 'tot_demands_base' in self._obs_rec_keys:
+                if 'tot_demands_base' in self.obs_rec_keys:
                     rec_obs['tot_demands_base'] += passive_demands.sum()
-                if 'tot_generations' in self._obs_rec_keys:
+                if 'tot_generations' in self.obs_rec_keys:
                     rec_obs['tot_generations'] += passive_generation.sum()
-                if 'mean_demands_base' in self._obs_rec_keys:
+                if 'mean_demands_base' in self.obs_rec_keys:
                     rec_obs['mean_demands_base'] = (rec_obs['mean_demands_base'] * self.num_battery_agents + passive_demands.sum()) / (self.num_battery_agents + self.num_passive_houses)
-                if 'mean_generations' in self._obs_rec_keys:
+                if 'mean_generations' in self.obs_rec_keys:
                     rec_obs['mean_generations'] = (rec_obs['mean_generations'] * self.num_battery_agents + passive_generation.sum()) / (self.num_battery_agents + self.num_passive_houses)
 
             obs[self.rec_agent] = rec_obs
