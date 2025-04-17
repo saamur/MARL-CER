@@ -83,7 +83,7 @@ def construct_net_from_config(config, rng):
 #             rngs=rng)
 #     return thing(rng)
 
-def construct_battery_net_from_config_multi_agent(config, rng, num_nets=None, num_sequences=None):
+def construct_battery_net_from_config_multi_agent(config, rng, num_nets=None):
 
     if num_nets is None:
         num_nets = config['NUM_BATTERY_AGENTS']
@@ -118,25 +118,26 @@ def construct_battery_net_from_config_multi_agent(config, rng, num_nets=None, nu
     #         normalize=config["NORMALIZE_NN_INPUTS"],
     #         # is_feature_normalizable=config['BATTERY_OBS_IS_NORMALIZABLE'],
     #         rngs=rng)
-    # elif config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
-    #     return StackedRecurrentActorCritic(
-    #         num_nets,
-    #         obs_space_size,
-    #         config["BATTERY_ACTION_SPACE_SIZE"],
-    #         num_sequences=num_sequences if num_sequences is not None else config["BATTERY_NUM_SEQUENCES"],
-    #         activation=config["ACTIVATION"],
-    #         lstm_activation=config["LSTM_ACTIVATION"],
-    #         net_arch=(config['NET_ARCH_BATTERIES'] if 'NET_ARCH_BATTERIES' in config.keys() else config.get("NET_ARCH")),
-    #         act_net_arch=(config['ACT_NET_ARCH_BATTERIES'] if 'ACT_NET_ARCH_BATTERIES' in config.keys() else config.get("ACT_NET_ARCH")),
-    #         cri_net_arch=(config['CRI_NET_ARCH_BATTERIES'] if 'CRI_NET_ARCH_BATTERIES' in config.keys() else config.get("CRI_NET_ARCH")),
-    #         lstm_net_arch=(config['LSTM_NET_ARCH_BATTERIES'] if 'LSTM_NET_ARCH_BATTERIES' in config.keys() else config.get("LSTM_NET_ARCH")),
-    #         lstm_act_net_arch=(config['LSTM_ACT_NET_ARCH_BATTERIES'] if 'LSTM_ACT_NET_ARCH_BATTERIES' in config.keys() else config.get("LSTM_ACT_NET_ARCH")),
-    #         lstm_cri_net_arch=(config['LSTM_CRI_NET_ARCH_BATTERIES'] if 'LSTM_CRI_NET_ARCH_BATTERIES' in config.keys() else config.get("LSTM_CRI_NET_ARCH")),
-    #         add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
-    #         normalize=config["NORMALIZE_NN_INPUTS"],
-    #         # is_feature_normalizable=config['BATTERY_OBS_IS_NORMALIZABLE'],
-    #         rngs=rng
-    # )
+    elif config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
+        return StackedRecurrentActorCritic(
+            num_nets,
+            config['BATTERY_OBS_KEYS'],
+            config["BATTERY_ACTION_SPACE_SIZE"],
+            activation=config["ACTIVATION"],
+            obs_is_seq=config['BATTERY_OBS_IS_SEQUENCE'],
+            obs_keys_cri=config.get('BATTERY_OBS_KEYS_CRI', None),
+            lstm_activation=config["LSTM_ACTIVATION"],
+            net_arch=(config['NET_ARCH_BATTERIES'] if 'NET_ARCH_BATTERIES' in config.keys() else config.get("NET_ARCH")),
+            act_net_arch=(config['ACT_NET_ARCH_BATTERIES'] if 'ACT_NET_ARCH_BATTERIES' in config.keys() else config.get("ACT_NET_ARCH")),
+            cri_net_arch=(config['CRI_NET_ARCH_BATTERIES'] if 'CRI_NET_ARCH_BATTERIES' in config.keys() else config.get("CRI_NET_ARCH")),
+            lstm_net_arch=(config['LSTM_NET_ARCH_BATTERIES'] if 'LSTM_NET_ARCH_BATTERIES' in config.keys() else config.get("LSTM_NET_ARCH")),
+            lstm_act_net_arch=(config['LSTM_ACT_NET_ARCH_BATTERIES'] if 'LSTM_ACT_NET_ARCH_BATTERIES' in config.keys() else config.get("LSTM_ACT_NET_ARCH")),
+            lstm_cri_net_arch=(config['LSTM_CRI_NET_ARCH_BATTERIES'] if 'LSTM_CRI_NET_ARCH_BATTERIES' in config.keys() else config.get("LSTM_CRI_NET_ARCH")),
+            add_logistic_to_actor=config["LOGISTIC_FUNCTION_TO_ACTOR"],
+            normalize=config["NORMALIZE_NN_INPUTS"],
+            # is_feature_normalizable=config['BATTERY_OBS_IS_NORMALIZABLE'],
+            rngs=rng
+    )
     else:
         raise ValueError('Invalid network name')
 

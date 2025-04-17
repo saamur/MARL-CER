@@ -666,7 +666,7 @@ def collect_trajectories(runner_state: RunnerState, config, env, rec_rule_based_
         done_batteries = jnp.stack([done[a] for a in env.battery_agents], axis=1)
         done_rec = done[env.rec_agent]
 
-        rewards_tot = jax.tree_map(lambda x, y: x + y, reward_first, reward_second)
+        rewards_tot = jax.tree.map(lambda x, y: x + y, reward_first, reward_second)
         rewards_batteries = jnp.stack([rewards_tot[a] for a in env.battery_agents], axis=1)
         rewards_batteries_local = jnp.stack([reward_local[a] for a in env.battery_agents], axis=1)
         reward_rec = rewards_tot[env.rec_agent]
@@ -973,7 +973,7 @@ def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, 
             # traj_data_batteries_for_loss = jax.tree.map(lambda x: x.swapaxes(0, 1), traj_data_batteries_for_loss)
 
             # print('traj_data_batteries_for_loss')
-            # print(jax.tree_map(lambda x: x.shape, traj_data_batteries_for_loss))
+            # print(jax.tree.map(lambda x: x.shape, traj_data_batteries_for_loss))
             if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
                 grad_fn_batteries = nnx.value_and_grad(_loss_fn_batteries_recurrent, has_aux=True)
                 # traj_data_batteries_for_loss += (traj_batch.done_prev_batteries,)
@@ -988,7 +988,7 @@ def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, 
             )
             # jax.debug.print('gggg {x}', x=grads_batteries.log_std)
             # print('tot loss batteries')
-            # print(jax.tree_map(lambda x: x.shape, total_loss_batteries))
+            # print(jax.tree.map(lambda x: x.shape, total_loss_batteries))
             # jax.debug.print('bat {x}', x=total_loss_batteries[0])
             #
             # jax.debug.print('{x}', x=optax.global_norm(grads_batteries), ordered=True)
@@ -1015,29 +1015,29 @@ def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, 
         # jax.debug.print('bef {z}', z=jax.tree.map(lambda l: l.shape, traj_batch), ordered=True)
 
         if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: jnp.swapaxes(x, 0, 1), batch
             )
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: x.reshape((x.shape[0],) + (-1, config['MINIBATCH_SIZE_BATTERIES']) + x.shape[2:]), batch
             )
-            sequences = jax.tree_util.tree_map(
+            sequences = jax.tree.map(
                 lambda x: x.reshape((-1,) + x.shape[2:]), batch
             )
             permutation = jax.random.permutation(_rng, config['NUM_MINIBATCHES_BATTERIES'])
-            minibatches = jax.tree_util.tree_map(
+            minibatches = jax.tree.map(
                 lambda x: jnp.take(x, permutation, axis=0), sequences
             )
         else:
             permutation = jax.random.permutation(_rng, batch_size)
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
             )
-            shuffled_batch = jax.tree_util.tree_map(
+            shuffled_batch = jax.tree.map(
                 lambda x: jnp.take(x, permutation, axis=0), batch
             )
             # jax.debug.print('aft2 {z}', z=jax.tree.map(lambda l: l.shape, shuffled_batch[0]), ordered=True)
-            minibatches = jax.tree_util.tree_map(
+            minibatches = jax.tree.map(
                 lambda x: jnp.reshape(
                     x, [config['NUM_MINIBATCHES_BATTERIES'], -1] + list(x.shape[1:])
                 ),
@@ -1240,7 +1240,7 @@ def update_batteries_network_local(runner_state: RunnerState, traj_batch, advant
             # traj_data_batteries_for_loss = jax.tree.map(lambda x: x.swapaxes(0, 1), traj_data_batteries_for_loss)
 
             # print('traj_data_batteries_for_loss')
-            # print(jax.tree_map(lambda x: x.shape, traj_data_batteries_for_loss))
+            # print(jax.tree.map(lambda x: x.shape, traj_data_batteries_for_loss))
             if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
                 grad_fn_batteries = None #nnx.value_and_grad(_loss_fn_batteries_recurrent, has_aux=True)
                 # traj_data_batteries_for_loss += (traj_batch.done_prev_batteries,)
@@ -1255,7 +1255,7 @@ def update_batteries_network_local(runner_state: RunnerState, traj_batch, advant
             )
             # jax.debug.print('gggg {x}', x=grads_batteries.log_std)
             # print('tot loss batteries')
-            # print(jax.tree_map(lambda x: x.shape, total_loss_batteries))
+            # print(jax.tree.map(lambda x: x.shape, total_loss_batteries))
             # jax.debug.print('bat {x}', x=total_loss_batteries[0])
             #
             # jax.debug.print('{x}', x=optax.global_norm(grads_batteries), ordered=True)
@@ -1282,29 +1282,29 @@ def update_batteries_network_local(runner_state: RunnerState, traj_batch, advant
         # jax.debug.print('bef {z}', z=jax.tree.map(lambda l: l.shape, traj_batch), ordered=True)
 
         if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: jnp.swapaxes(x, 0, 1), batch
             )
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: x.reshape((x.shape[0],) + (-1, config['MINIBATCH_SIZE_BATTERIES']) + x.shape[2:]), batch
             )
-            sequences = jax.tree_util.tree_map(
+            sequences = jax.tree.map(
                 lambda x: x.reshape((-1,) + x.shape[2:]), batch
             )
             permutation = jax.random.permutation(_rng, config['NUM_MINIBATCHES_BATTERIES'])
-            minibatches = jax.tree_util.tree_map(
+            minibatches = jax.tree.map(
                 lambda x: jnp.take(x, permutation, axis=0), sequences
             )
         else:
             permutation = jax.random.permutation(_rng, batch_size)
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
             )
-            shuffled_batch = jax.tree_util.tree_map(
+            shuffled_batch = jax.tree.map(
                 lambda x: jnp.take(x, permutation, axis=0), batch
             )
             # jax.debug.print('aft2 {z}', z=jax.tree.map(lambda l: l.shape, shuffled_batch[0]), ordered=True)
-            minibatches = jax.tree_util.tree_map(
+            minibatches = jax.tree.map(
                 lambda x: jnp.reshape(
                     x, [config['NUM_MINIBATCHES_BATTERIES'], -1] + list(x.shape[1:])
                 ),
@@ -1474,7 +1474,7 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
             # traj_data_batteries_for_loss = jax.tree.map(lambda x: x.swapaxes(0, 1), traj_data_batteries_for_loss)
 
             # print('traj_data_batteries_for_loss')
-            # print(jax.tree_map(lambda x: x.shape, traj_data_batteries_for_loss))
+            # print(jax.tree.map(lambda x: x.shape, traj_data_batteries_for_loss))
             if config['NETWORK_TYPE_REC'] == 'recurrent_actor_critic':
                 grad_fn_rec = nnx.value_and_grad(_loss_fn_rec_recurrent, has_aux=True)
                 # traj_data_batteries_for_loss += (traj_batch.done_prev_batteries,)
@@ -1514,7 +1514,7 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
             # jittable_check_pytree(total_loss_rec)
 
             # print('tot loss batteites')
-            # print(jax.tree_map(lambda x: x.shape, total_loss_batteries))
+            # print(jax.tree.map(lambda x: x.shape, total_loss_batteries))
             # jax.debug.print('rec {x}', x=total_loss_rec[0])
 
             optimizer_rec.update(grads_rec)
@@ -1537,29 +1537,29 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
         # jax.debug.print('bef {z}', z=jax.tree.map(lambda l: l.shape, traj_batch), ordered=True)
 
         if config['NETWORK_TYPE_REC'] == 'recurrent_actor_critic':
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: jnp.swapaxes(x, 0, 1), batch
             )
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: x.reshape((x.shape[0],) + (-1, config['MINIBATCH_SIZE_REC']) + x.shape[2:]), batch
             )
-            sequences = jax.tree_util.tree_map(
+            sequences = jax.tree.map(
                 lambda x: x.reshape((-1,) + x.shape[2:]), batch
             )
             permutation = jax.random.permutation(_rng, config['NUM_MINIBATCHES_REC'])
-            minibatches = jax.tree_util.tree_map(
+            minibatches = jax.tree.map(
                 lambda x: jnp.take(x, permutation, axis=0), sequences
             )
         else:
             permutation = jax.random.permutation(_rng, batch_size)
-            batch = jax.tree_util.tree_map(
+            batch = jax.tree.map(
                 lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
             )
-            shuffled_batch = jax.tree_util.tree_map(
+            shuffled_batch = jax.tree.map(
                 lambda x: jnp.take(x, permutation, axis=0), batch
             )
             # jax.debug.print('aft2 {z}', z=jax.tree.map(lambda l: l.shape, shuffled_batch[0]), ordered=True)
-            minibatches = jax.tree_util.tree_map(
+            minibatches = jax.tree.map(
                 lambda x: jnp.reshape(
                     x, [config['NUM_MINIBATCHES_REC'], -1] + list(x.shape[1:])
                 ),
