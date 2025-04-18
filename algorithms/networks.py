@@ -880,8 +880,9 @@ class RECRecurrentActorCritic(nnx.Module):
 
         self.cri_finalize = []
         self.cri_finalize.append(partial(jnp.squeeze, axis=-1))
-        self.cri_finalize.append(nnx.Linear(num_battery_agents, 1, kernel_init=orthogonal(1.), bias_init=constant(0.),
-                       rngs=rngs))
+        # self.cri_finalize.append(nnx.Linear(num_battery_agents, 1, kernel_init=orthogonal(1.), bias_init=constant(0.),
+        #                rngs=rngs))
+        self.cri_finalize.append(partial(jnp.mean, axis=-1, keepdims=True))
 
     def __call__(self, obs, lstm_act_state, lstm_cri_state, return_cri=True, return_separate_cri=False):
         data_act, data_cri = self.prepare_data(obs, return_cri=return_cri)
