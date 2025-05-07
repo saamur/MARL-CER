@@ -9,6 +9,7 @@ from typing import Sequence
 import distrax
 
 from algorithms.normalization_custom import RunningNorm
+import algorithms.utils as utils
 
 
 class ActorCritic(nnx.Module):
@@ -41,9 +42,6 @@ class ActorCritic(nnx.Module):
         else:
             self.obs_keys_cri = obs_keys_cri
 
-
-        print('ActorCritic', self.obs_keys_act, self.obs_keys_cri)
-
         act_net_arch = list(act_net_arch)
         cri_net_arch = list(cri_net_arch)
 
@@ -54,7 +52,7 @@ class ActorCritic(nnx.Module):
             self.norm_layer_act = RunningNorm(num_features=len(self.obs_keys_act), use_bias=False, use_scale=False, rngs=rngs)
             self.norm_layer_cri = RunningNorm(num_features=len(self.obs_keys_cri), use_bias=False, use_scale=False, rngs=rngs)
 
-        activation = activation_from_name(activation)
+        activation = utils.activation_from_name(activation)
 
         act_net_arch = [len(self.obs_keys_act)] + act_net_arch + [out_features]
 
@@ -164,12 +162,12 @@ class RecurrentActorCritic(nnx.Module):
             self.norm_layer_act = RunningNorm(num_features=len(self.obs_keys_act), use_bias=False, use_scale=False, rngs=rngs)
             self.norm_layer_cri = RunningNorm(num_features=len(self.obs_keys_cri), use_bias=False, use_scale=False, rngs=rngs)
 
-        activation = activation_from_name(activation)
+        activation = utils.activation_from_name(activation)
 
         if lstm_activation is None:
             lstm_activation = activation
         else:
-            lstm_activation = activation_from_name(lstm_activation)
+            lstm_activation = utils.activation_from_name(lstm_activation)
 
         self.obs_is_seq = obs_is_seq
         self.num_sequences_act = len([key for key in self.obs_keys_act if self.obs_is_seq[key]])
@@ -530,8 +528,6 @@ class RECActorCritic(nnx.Module):
         else:
             self.obs_keys_cri = obs_keys_cri
 
-        print('RECActorCritic', self.obs_keys_act, self.obs_keys_cri)
-
         self.obs_is_local = obs_is_local
         self.num_battery_agents = num_battery_agents
 
@@ -551,7 +547,7 @@ class RECActorCritic(nnx.Module):
         act_net_arch = tuple(act_net_arch)
         cri_net_arch = tuple(cri_net_arch)
 
-        activation = activation_from_name(activation)
+        activation = utils.activation_from_name(activation)
 
         @nnx.split_rngs(splits=num_battery_agents)
         @nnx.vmap(in_axes=(None, None, None, None, 0))
@@ -606,17 +602,13 @@ class RECActorCritic(nnx.Module):
         self.act_layers_before, self.act_layers, self.act_layers_after = build_layers(non_shared_net_arch_before, act_net_arch, non_shared_net_arch_after, in_features_act)
         self.cri_layers_before, self.cri_layers, self.cri_layers_after = build_layers(non_shared_net_arch_before, cri_net_arch, non_shared_net_arch_after, in_features_cri)
 
-        self.cri_mixer = nnx.Param(jnp.zeros(self.num_battery_agents))
+        self.cri_finalize = []
 
-        # self.cri_finalize = []
-        #
-        #
-        #
-        # self.cri_finalize.append(partial(jnp.squeeze, axis=-1))
-        # # self.cri_finalize.append(nnx.Linear(num_battery_agents, 1, kernel_init=orthogonal(1.), bias_init=constant(0.),
-        # #                rngs=rngs))
-        # self.cri_finalize.append(partial(jnp.mean, axis=-1, keepdims=True))
-        # # self.cri_finalize.append(partial(jnp.sum, axis=-1, keepdims=True))
+        self.cri_finalize.append(partial(jnp.squeeze, axis=-1))
+        # self.cri_finalize.append(nnx.Linear(num_battery_agents, 1, kernel_init=orthogonal(1.), bias_init=constant(0.),
+        #                rngs=rngs))
+        self.cri_finalize.append(partial(jnp.mean, axis=-1, keepdims=True))
+        # self.cri_finalize.append(partial(jnp.sum, axis=-1, keepdims=True))
 
         self.activation = activation
 
@@ -650,10 +642,6 @@ class RECActorCritic(nnx.Module):
 
         pi = distrax.Dirichlet(alpha)
 
-        def finalize_critic(critic_separate):
-            weighted = critic_separate * nnx.softmax(self.cri_mixer.value)
-            return weighted.sum(axis=-1)
-
         if return_cri:
 
             critic = data_cri
@@ -666,7 +654,10 @@ class RECActorCritic(nnx.Module):
 
             critic_separate =  jnp.squeeze(critic, axis=-1)
 
-            critic = finalize_critic(critic_separate)
+            for layer in self.cri_finalize:
+                critic = layer(critic)
+
+            critic = jnp.squeeze(critic, axis=-1)
         else:
             critic = None
 
@@ -796,12 +787,12 @@ class RECRecurrentActorCritic(nnx.Module):
             self.norm_layer_act = RunningNorm(num_features=in_features_act, use_bias=False, use_scale=False, rngs=rngs)
             self.norm_layer_cri = RunningNorm(num_features=in_features_cri, use_bias=False, use_scale=False, rngs=rngs)
 
-        activation = activation_from_name(activation)
+        activation = utils.activation_from_name(activation)
 
         if lstm_activation is None:
             lstm_activation = activation
         else:
-            lstm_activation = activation_from_name(lstm_activation)
+            lstm_activation = utils.activation_from_name(lstm_activation)
 
         @nnx.split_rngs(splits=num_battery_agents)
         @nnx.vmap(in_axes=(None, None, None, None, 0))
@@ -887,13 +878,11 @@ class RECRecurrentActorCritic(nnx.Module):
                                                                                       cri_net_arch,
                                                                                       non_shared_net_arch_after)
 
-        self.cri_mixer = nnx.Param(jnp.zeros(self.num_battery_agents))
-
-        # self.cri_finalize = []
-        # self.cri_finalize.append(partial(jnp.squeeze, axis=-1))
-        # # self.cri_finalize.append(nnx.Linear(num_battery_agents, 1, kernel_init=orthogonal(1.), bias_init=constant(0.),
-        # #                rngs=rngs))
-        # self.cri_finalize.append(partial(jnp.mean, axis=-1, keepdims=True))
+        self.cri_finalize = []
+        self.cri_finalize.append(partial(jnp.squeeze, axis=-1))
+        # self.cri_finalize.append(nnx.Linear(num_battery_agents, 1, kernel_init=orthogonal(1.), bias_init=constant(0.),
+        #                rngs=rngs))
+        self.cri_finalize.append(partial(jnp.mean, axis=-1, keepdims=True))
 
     def __call__(self, obs, lstm_act_state, lstm_cri_state, return_cri=True, return_separate_cri=False):
         data_act, data_cri = self.prepare_data(obs, return_cri=return_cri)
@@ -903,7 +892,7 @@ class RECRecurrentActorCritic(nnx.Module):
 
         if return_cri:
             lstm_cri_state, cri_output = self.apply_lstm_cri(data_cri, lstm_cri_state)
-            critic, separate_cri = self.apply_cri_mlp(data_cri, cri_output)
+            critic, separate_cri = self.apply_cri_mlp(data_cri, cri_output, return_separate_cri=return_separate_cri)
         else:
             critic, separate_cri = None, None
 
@@ -980,11 +969,7 @@ class RECRecurrentActorCritic(nnx.Module):
 
         return pi
 
-    def apply_cri_mlp(self, x, lstm_cri_output):
-        def finalize_critic(critic_separate):
-            weighted = critic_separate * nnx.softmax(self.cri_mixer.value)
-            return weighted.sum(axis=-1)
-
+    def apply_cri_mlp(self, x, lstm_cri_output, return_separate_cri=False):
         non_seq = jax.lax.slice_in_dim(x, self.num_sequences_cri, x.shape[-1], axis=-1)
         critic = jnp.concat([lstm_cri_output, non_seq], axis=-1)
 
@@ -993,11 +978,15 @@ class RECRecurrentActorCritic(nnx.Module):
             critic = layer(critic)
         critic = self.call_non_shared_layers(self.cri_layers_after, critic)
 
-        critic_separate = jnp.squeeze(critic, axis=-1)
+        if return_separate_cri:
+            critic_separate = jnp.squeeze(critic, axis=-1)
+        else:
+            critic_separate = None
 
-        critic = finalize_critic(critic_separate)
+        for layer in self.cri_finalize:
+            critic = layer(critic)
 
-        return critic, critic_separate
+        return jnp.squeeze(critic, axis=-1), critic_separate
 
     # def prepare_mask(self, is_obs_normalizable):
     #     local_obs_keys = [key for key in self.obs_keys if self.obs_is_local[key]]
@@ -1115,7 +1104,7 @@ class RECActorCriticConcat(nnx.Module):
         act_net_arch = tuple(act_net_arch)
         cri_net_arch = tuple(cri_net_arch)
 
-        activation = activation_from_name(activation)
+        activation = utils.activation_from_name(activation)
 
         act_net_arch = (in_features,) + act_net_arch + (num_battery_agents,)
 
@@ -1267,7 +1256,7 @@ class AsymmetricRECActorCriticConcat(nnx.Module):
         act_net_arch = tuple(act_net_arch)
         cri_net_arch = tuple(cri_net_arch)
 
-        activation = activation_from_name(activation)
+        activation = utils.activation_from_name(activation)
 
         act_net_arch = (in_features_act,) + act_net_arch + (num_battery_agents,)
 
@@ -1395,21 +1384,3 @@ class AsymmetricRECActorCriticConcat(nnx.Module):
             data_cri = None
 
         return data_act, data_cri
-
-
-def activation_from_name(name: str):
-    name = name.lower()
-    if name == 'relu':
-        return nnx.relu
-    elif name == 'tanh':
-        return nnx.tanh
-    elif name == 'sigmoid':
-        return nnx.sigmoid
-    elif name == 'leaky_relu':
-        return nnx.leaky_relu
-    elif name == 'swish':
-        return nnx.swish
-    elif name == 'elu':
-        return nnx.elu
-    else:
-        raise ValueError("'activation' must be 'relu' or 'tanh'")

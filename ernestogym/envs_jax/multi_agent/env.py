@@ -68,10 +68,10 @@ class RECEnv(MultiAgentEnv):
             self.BESS = bess_fading.BatteryEnergyStorageSystem
         elif battery_type == 'degrading':
             self.BESS = bess_degrading.BatteryEnergyStorageSystem
-        if battery_type == 'degrading_dropflow':
+        elif battery_type == 'degrading_dropflow':
             self.BESS = bess_degrading_dropflow.BatteryEnergyStorageSystem
         else:
-            raise ValueError(f'Unsupported battery aging: {settings['aging_type']}')
+            raise ValueError(f'Unsupported battery aging: {battery_type}')
 
         for i in range(self.num_battery_agents):
             batteries.append(self.BESS.get_init_state(models_config=settings['model_config'][i],
@@ -784,7 +784,7 @@ class RECEnv(MultiAgentEnv):
                                    )
 
 
-        rewards = {a: r_glob[i] for i, a in enumerate(self.battery_agents)}
+        rewards = {a: weig_r_glob[i] for i, a in enumerate(self.battery_agents)}
         rewards[self.rec_agent] = rec_reward
 
         dones_array = jnp.logical_or(truncated, terminated)

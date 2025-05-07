@@ -9,20 +9,15 @@ from flax import nnx
 from flax import struct
 from functools import partial
 
-from jax_tqdm import scan_tqdm, loop_tqdm
-
 from algorithms.tqdm_custom import scan_tqdm as tqdm_custom
 
-from flax.nnx.nn.initializers import constant, orthogonal, glorot_normal
 from flax.nnx import GraphDef, GraphState
 import numpy as np
 import optax
 from typing import Sequence, NamedTuple, Any, Union
-import distrax
 
 from jaxmarl.wrappers.baselines import JaxMARLWrapper
 
-from algorithms.normalization_custom import RunningNorm
 import algorithms.utils as utils
 from ernestogym.envs_jax.multi_agent.env import RECEnv, EnvState
 from algorithms.networks import StackedActorCritic, StackedRecurrentActorCritic, RECActorCritic, RECRecurrentActorCritic
@@ -88,7 +83,7 @@ def make_train(config, env:RECEnv, network_batteries=None):
 
     if config.get('REC_VALUE_IN_BATTERY_OBS', False) or config.get('REC_VALUE_IN_BATTERY_OBS_CRI', False):
         if config.get('REC_VALUE_IN_BATTERY_OBS', False):
-            config['BATTERY_OBS_KEYS'] = ('rec_value',)
+            config['BATTERY_OBS_KEYS'] += ('rec_value',)
         else:
             config['BATTERY_OBS_KEYS_CRI'] = config['BATTERY_OBS_KEYS'] + ('rec_value',)
         config['BATTERY_OBS_IS_SEQUENCE']['rec_value'] = True
@@ -353,8 +348,6 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, config['NUM_ENVS'])
         obsv, env_state = env.reset(reset_rng)
-
-        # jax.debug.print('beg', ordered=True)
 
         if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic' and config['NUM_RL_AGENTS'] > 0:
             act_state_batteries, cri_state_batteries = network_batteries.get_initial_lstm_state()
@@ -1180,7 +1173,7 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
                                                                   data_for_network_act, data_for_network_cri, traj_batch.done_prev_rec)
 
                 pi = network.apply_act_mlp(data_for_network_act, act_outputs)
-                values, _ = network.apply_cri_mlp(data_for_network_cri, cri_outputs, return_separate_cri=False)
+                values, _ = network.apply_cri_mlp(data_for_network_cri, cri_outputs)
 
                 log_prob = pi.log_prob(traj_batch.actions_rec + 1e-8)
 
@@ -1243,7 +1236,7 @@ def update_rec_network(runner_state, traj_batch, advantages, targets, config):
 
         batch = (traj_batch, advantages, targets)
 
-        print(jax.tree.map(lambda x: x.shape, traj_batch))
+        # print(jax.tree.map(lambda x: x.shape, traj_batch))
 
         # print(jax.tree.map(lambda x: x.shape, batch))
 
