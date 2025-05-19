@@ -34,6 +34,9 @@ class EnvState(State):
     prev_actions_rec: jnp.array
     exp_avg_rev_actions_rec: jnp.array
 
+    last_local_reward: jnp.array
+    last_glob_reward: jnp.array
+
     iter: int
     timeframe: int
     is_rec_turn: bool
@@ -170,6 +173,7 @@ class RECEnv(MultiAgentEnv):
         self.incentivizing_tariff_max_variable = settings['incentivizing_tariff_max_variable']
         self.incentivizing_tariff_baseline_variable = settings['incentivizing_tariff_baseline_variable']
         self.fairness_coeff = settings['fairness_coeff']
+        self.rec_reward_type = settings['rec_reward_type']
 
         self._termination = settings['termination']
         if self._termination['max_iterations'] is None:
@@ -312,6 +316,13 @@ class RECEnv(MultiAgentEnv):
             self.obs_is_sequence_battery['rec_actions_prev_step'] = True
             self.obs_is_local_battery['rec_actions_prev_step'] = False
             self.obs_is_normalizable_battery['rec_actions_prev_step'] = True
+
+        if 'last_glob_reward' in settings['battery_obs']:
+            self.obs_battery_agents_keys.append('last_glob_reward')
+            self.battery_obs_space['last_glob_reward'] = {'low': 0, 'high': jnp.inf}
+            self.obs_is_sequence_battery['last_glob_reward'] = True
+            self.obs_is_local_battery['last_glob_reward'] = False
+            self.obs_is_normalizable_battery['last_glob_reward'] = True
 
 
         # indices = np.argsort(np.logical_not(obs_is_sequence))
@@ -497,7 +508,9 @@ class RECEnv(MultiAgentEnv):
                                    demands_battery_houses=demands_battery_houses,
                                    demands_passive_houses=demands_passive_houses,
                                    prev_actions_rec=jnp.ones(self.num_battery_agents)/self.num_battery_agents,
-                                   exp_avg_rev_actions_rec=jnp.ones(self.num_battery_agents)/self.num_battery_agents)
+                                   exp_avg_rev_actions_rec=jnp.ones(self.num_battery_agents)/self.num_battery_agents,
+                                   last_local_reward=jnp.zeros(self.num_battery_agents),
+                                   last_glob_reward=jnp.zeros(self.num_battery_agents))
 
     @partial(jax.vmap, in_axes=(None, 0, None))
     def _get_generations(self, gen_data, timestep):
@@ -621,6 +634,8 @@ class RECEnv(MultiAgentEnv):
                         obs_array['self_consumption_marginal_contribution'] = self._calc_marginal_contributions(state)
                     case 'rec_actions_prev_step':
                         obs_array['rec_actions_prev_step'] = state.prev_actions_rec
+                    case 'last_glob_reward':
+                        obs_array['last_glob_reward'] = state.last_glob_reward
 
             obs = {a: jax.tree.map(lambda x: x[i], obs_array) for i, a in enumerate(self.battery_agents)}
 
@@ -761,12 +776,7 @@ class RECEnv(MultiAgentEnv):
 
         tot_incentives = self._calc_rec_incentives(state, self_consumption)
 
-        rec_reward = self._calc_rec_reward(self_consumption, actions[self.rec_agent])
-
         tot_incentives_to_battery_agents = tot_incentives * self.num_battery_agents / (self.num_battery_agents + self.num_passive_houses)
-
-        r_glob = tot_incentives_to_battery_agents * actions[self.rec_agent]
-        weig_r_glob = self.glob_coeff * r_glob
 
         terminated = state.battery_states.soh <= self._termination['min_soh']
 
@@ -783,19 +793,23 @@ class RECEnv(MultiAgentEnv):
                                                           self.selling_prices_battery_houses, state.timeframe))),
                                    )
 
-
-        rewards = {a: weig_r_glob[i] for i, a in enumerate(self.battery_agents)}
-        rewards[self.rec_agent] = rec_reward
-
         dones_array = jnp.logical_or(truncated, terminated)
         done_rec = jnp.any(dones_array)
 
         new_exp_avg_rec_actions_prev_step = self.smoothing_factor_rec_actions * state.exp_avg_rev_actions_rec + (1-self.smoothing_factor_rec_actions) * actions[self.rec_agent]
 
+        r_glob = tot_incentives_to_battery_agents * actions[self.rec_agent]
+        weig_r_glob = self.glob_coeff * r_glob
+
         new_state = state.replace(is_rec_turn=False,
                                   done=jnp.concat([dones_array, done_rec[jnp.newaxis]]),
                                   prev_actions_rec=actions[self.rec_agent],
-                                  exp_avg_rev_actions_rec=new_exp_avg_rec_actions_prev_step)
+                                  exp_avg_rev_actions_rec=new_exp_avg_rec_actions_prev_step,
+                                  last_glob_reward=weig_r_glob)
+
+        rec_reward = self._calc_rec_reward(new_state, self_consumption, actions[self.rec_agent])
+        rewards = {a: weig_r_glob[i] for i, a in enumerate(self.battery_agents)}
+        rewards[self.rec_agent] = rec_reward
 
         dones = {a: dones_array[i] for i, a in enumerate(self.battery_agents)}
         dones[self.rec_agent] = done_rec
@@ -854,6 +868,9 @@ class RECEnv(MultiAgentEnv):
         t_amb = self._get_temperatures(self.temp_ambient, new_timeframe)
 
         new_battery_states = jax.vmap(self.BESS.step, in_axes=(0, 0, None, 0))(state.battery_states, i_to_apply, self.env_step, t_amb)
+        new_battery_states = new_battery_states.replace(aging_state=jax.lax.stop_gradient(new_battery_states.aging_state),
+                                                        soh=jax.lax.stop_gradient(new_battery_states.soh),
+                                                        c_max=jax.lax.stop_gradient(new_battery_states.c_max))
 
         to_load = new_battery_states.electrical_state.p
 
@@ -908,6 +925,7 @@ class RECEnv(MultiAgentEnv):
         new_state = state.replace(battery_states=new_battery_states,
                                   iter=new_iteration,
                                   timeframe=new_timeframe,
+                                  last_local_reward=r_tot,
                                   is_rec_turn=True)
 
         rewards = {a: r_tot[i] for i, a in enumerate(self.battery_agents)}
@@ -1007,8 +1025,13 @@ class RECEnv(MultiAgentEnv):
             return r_trading, r_op, r_deg, r_clipping
 
 
-    def _calc_rec_reward(self, self_consumption, actions):
-        return self_consumption + self.fairness_coeff * jnp.var(actions)
+    def _calc_rec_reward(self, state: EnvState, self_consumption, actions):
+        if self.rec_reward_type == 'self_consumption':
+            return self_consumption + self.fairness_coeff * jnp.var(actions)
+        elif self.rec_reward_type == 'sum_rewards_battery_agents':
+            return (state.last_local_reward + state.last_glob_reward).sum() + self.fairness_coeff * jnp.var(actions)
+        else:
+            raise ValueError(f'Unknown rec_reward_type {self.rec_reward_type}')
 
 
     def _calc_rec_incentives(self, state: EnvState, self_consumption: float):

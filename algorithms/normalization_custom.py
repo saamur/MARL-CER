@@ -368,6 +368,53 @@ class RunningNorm(Module):
   def population_variance(self):
     return self.sum_squared_differences.value / self.count.value
 
+class RunningNormScalar(Module):
+  def __init__(
+    self,
+    *,
+    use_running_average: bool = False,
+    epsilon: float = 1e-5,
+    dtype: tp.Optional[Dtype] = None,
+    param_dtype: Dtype = jnp.float32,
+    use_bias: bool = True,
+    use_scale: bool = True,
+    bias_init: Initializer = initializers.zeros_init(),
+    scale_init: Initializer = initializers.ones_init(),
+    axis_name: tp.Optional[str] = None,
+    axis_index_groups: tp.Any = None,
+    use_fast_variance: bool = True,
+    rngs: rnglib.Rngs,
+  ):
+    self._running_norm_module = RunningNorm(1,
+                                            use_running_average=use_running_average,
+                                            axis=-1,
+                                            epsilon=epsilon,
+                                            dtype=dtype,
+                                            param_dtype=param_dtype,
+                                            use_bias=use_bias,
+                                            use_scale=use_scale,
+                                            bias_init=bias_init,
+                                            scale_init=scale_init,
+                                            axis_name=axis_name,
+                                            axis_index_groups=axis_index_groups,
+                                            use_fast_variance=use_fast_variance,
+                                            rngs=rngs)
+
+  def __call__(
+    self,
+    x,
+    use_running_average: tp.Optional[bool] = None,
+    *,
+    mask: tp.Optional[jax.Array] = None,
+  ):
+    x = jnp.expand_dims(x, axis=-1)
+
+    normalized_x = self._running_norm_module(x, use_running_average=use_running_average, mask=mask)
+    normalized_x = jnp.squeeze(normalized_x, axis=-1)
+
+    return normalized_x
+
+
 class MaskedRunningNorm(Module):
 
   def __init__(

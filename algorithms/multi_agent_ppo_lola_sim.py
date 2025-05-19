@@ -173,16 +173,16 @@ def make_train(config, env:RECEnv, network_batteries=None):
     #     env = NormalizeVecObservation(env)
     #     env = NormalizeVecReward(env, config['GAMMA'])
 
-    def schedule_builder(lr_init, lr_end, frac_dynamic, num_updates, num_minibatches, warm_up):
+    def schedule_builder(name, lr_init, lr_end, tot_steps, num_updates, num_minibatches, warm_up):
 
-        tot_steps = int(num_minibatches * config['UPDATE_EPOCHS'] * num_updates * frac_dynamic)
-        warm_up_steps = int(num_minibatches * config['UPDATE_EPOCHS'] * num_updates * warm_up)
+        warm_up_steps = int(tot_steps * warm_up)
 
-        if config['LR_SCHEDULE'] == 'linear':
+        if name == 'linear':
             return optax.schedules.linear_schedule(lr_init, lr_end, tot_steps)
-        elif config['LR_SCHEDULE'] == 'cosine':
-            optax.schedules.cosine_decay_schedule(lr_init, tot_steps, lr_end / lr_init)
+        elif name == 'cosine':
             return optax.schedules.warmup_cosine_decay_schedule(0., lr_init, warm_up_steps, tot_steps, lr_end)
+        elif name == 'exponential':
+            return optax.schedules.exponential_decay(lr_init, config['TRANSITION_STEPS_SCHE'], 0.1, end_value=lr_end)
         else:
             return lr_init
 
@@ -192,15 +192,19 @@ def make_train(config, env:RECEnv, network_batteries=None):
     _rng = nnx.Rngs(222)
     network_rec = utils.construct_rec_net_from_config_multi_agent(config, _rng)
 
-    schedule_batteries = schedule_builder(config['LR_BATTERIES'],
+    schedule_batteries = schedule_builder(config['LR_SCHEDULE_BATTERIES'],
+                                          config['LR_BATTERIES'],
                                           config['LR_BATTERIES_MIN'],
-                                          config['FRACTION_DYNAMIC_LR_BATTERIES'],
+                                          int(config['NUM_MINIBATCHES_BATTERIES'] * config['UPDATE_EPOCHS'] *
+                                              config['NUM_UPDATES'] * config['NUM_CONSECUTIVE_UPDATES_BATTERIES']/(config['NUM_CONSECUTIVE_UPDATES_BATTERIES']+config['NUM_CONSECUTIVE_UPDATES_REC']) *
+                                              config['FRACTION_DYNAMIC_LR_BATTERIES']),
                                           config['NUM_UPDATES'],
                                           config['NUM_MINIBATCHES_BATTERIES'],
                                           warm_up=config.get('WARMUP_SCHEDULE_BATTERIES', 0))
-    schedule_rec = schedule_builder(config['LR_REC'],
+    schedule_rec = schedule_builder(config['LR_SCHEDULE_REC'],
+                                    config['LR_REC'],
                                     config['LR_REC_MIN'],
-                                    config['FRACTION_DYNAMIC_LR_REC'],
+                                    int(config['UPDATE_TIMES_REC'] * config['NUM_UPDATES'] * config['NUM_CONSECUTIVE_UPDATES_REC']/(config['NUM_CONSECUTIVE_UPDATES_BATTERIES']+config['NUM_CONSECUTIVE_UPDATES_REC'])),
                                     config['NUM_UPDATES'],
                                     config['NUM_MINIBATCHES_REC'],
                                     warm_up=config.get('WARMUP_SCHEDULE_REC', 0))
@@ -314,10 +318,12 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
 
     directory = path_saving + dir_name
 
+    actual_num_iterations = int(config['NUM_UPDATES'] * config.get('TRUNCATE_FRACTION', 1))
+
     def end_update_step(info, i):
         if len(infos) == 0:
             # infos = jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES'],)+x.shape), info)
-            infos.update(jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES'],) + x.shape), info))
+            infos.update(jax.tree.map(lambda x: np.empty_like(x, shape=(actual_num_iterations,) + x.shape), info))
 
         info = jax.device_put(info, device=jax.devices('cpu')[0])
 
@@ -330,7 +336,7 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
         if len(val_infos) == 0:
             # infos = jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES'],)+x.shape), info)
             val_infos.update(
-                jax.tree.map(lambda x: np.empty_like(x, shape=((config['NUM_UPDATES'] - 1) // freq_val + 1,) + x.shape),
+                jax.tree.map(lambda x: np.empty_like(x, shape=((actual_num_iterations - 1) // freq_val + 1,) + x.shape),
                              val_info))
 
         def update(logs, new):
@@ -394,11 +400,43 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
 
         # TRAIN LOOP
         # @scan_tqdm(config['NUM_UPDATES'], print_rate=1)
-        @tqdm_custom(0, 0, 1, config['NUM_UPDATES'], print_rate=1)
+        @tqdm_custom(0, 0, 1, actual_num_iterations, print_rate=1)
         def _update_step(runner_state, curr_iter):
             # COLLECT TRAJECTORIES
 
-            runner_state = update_rec_network(runner_state, env, config)
+            def update_rec(runner_state):
+                env_state, last_obs_batteries = runner_state.env_state, runner_state.last_obs_batteries
+                runner_state, losses_rec = update_rec_network(runner_state, env, config)
+
+                if config['RESTORE_ENV_STATE_AFTER_REC_UPDATE']:
+                    runner_state = runner_state._replace(env_state=env_state, last_obs_batteries=last_obs_batteries)
+
+
+                return runner_state
+
+            def update_batteries(runner_state):
+                runner_state, traj_batch, last_val_batteries, last_val_rec = collect_trajectories(runner_state, config,
+                                                                                                  env,
+                                                                                                  True,
+                                                                                                  config['NUM_STEPS'])
+
+                advantages, targets = _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config)
+
+                advantages_batteries, _ = advantages
+                targets_batteries, _ = targets
+
+                runner_state, total_loss_batteries = update_batteries_network(runner_state, traj_batch,
+                                                                              advantages_batteries, targets_batteries,
+                                                                              config, for_rec_update=False)
+
+                return runner_state
+
+            runner_state = nnx.cond(
+                curr_iter % (config['NUM_CONSECUTIVE_UPDATES_BATTERIES'] + config['NUM_CONSECUTIVE_UPDATES_REC']) < config['NUM_CONSECUTIVE_UPDATES_REC'],
+                update_rec,
+                update_batteries,
+                runner_state)
+
 
             if validate:
 
@@ -479,7 +517,7 @@ def train_wrapper(env:RECEnv, config, network_batteries, optimizer_batteries, ne
     else:
         return {'runner_state': runner_state, 'metrics': infos}
 
-def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_update):
+def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_update, num_steps):
 
     def _env_step(runner_state: RunnerState):
 
@@ -574,11 +612,11 @@ def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_u
             rng_step, env_state, actions_first
         )
 
-        obsv = jax.lax.stop_gradient(obsv)
-        env_state = jax.lax.stop_gradient(env_state)
-        reward_first = jax.lax.stop_gradient(reward_first)
-        done_first = jax.lax.stop_gradient(done_first)
-        info_first = jax.lax.stop_gradient(info_first)
+        # obsv = jax.lax.stop_gradient(obsv)
+        # env_state = jax.lax.stop_gradient(env_state)
+        # reward_first = jax.lax.stop_gradient(reward_first)
+        # done_first = jax.lax.stop_gradient(done_first)
+        # info_first = jax.lax.stop_gradient(info_first)
 
         info_first['actions'] = actions_first
 
@@ -634,10 +672,10 @@ def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_u
             rng_step, env_state, actions_second
         )
 
-        obsv = jax.lax.stop_gradient(obsv)
-        env_state = jax.lax.stop_gradient(env_state)
-        done_second = jax.lax.stop_gradient(done_second)
-        info_second = jax.lax.stop_gradient(info_second)
+        # obsv = jax.lax.stop_gradient(obsv)
+        # env_state = jax.lax.stop_gradient(env_state)
+        # done_second = jax.lax.stop_gradient(done_second)
+        # info_second = jax.lax.stop_gradient(info_second)
 
         info_second['actions'] = actions_second
 
@@ -698,7 +736,7 @@ def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_u
     runner_state, traj_batch = nnx.scan(_env_step,
                                         in_axes=nnx.Carry,
                                         out_axes=(nnx.Carry, 0),
-                                        length=config['NUM_STEPS'])(runner_state)
+                                        length=num_steps)(runner_state)
 
     _, transition = _env_step(runner_state)
 
@@ -801,7 +839,7 @@ class UpdateState(NamedTuple):
     rng: jax.random.PRNGKey
 
 
-def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, targets, config):
+def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, targets, config, for_rec_update):
     def _update_epoch(update_state: UpdateState):
         def _update_minbatch(net_and_optim, traj_batch, advantages, targets):
             network_batteries, optimizer_batteries = net_and_optim
@@ -986,10 +1024,16 @@ def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, 
 
         # train_state, traj_batch, advantages, targets, rng = update_state
         rng, _rng = jax.random.split(update_state.rng)
-        batch_size = config['MINIBATCH_SIZE_BATTERIES'] * config['NUM_MINIBATCHES_BATTERIES']
-        assert (
-                batch_size == config['NUM_STEPS'] * config['NUM_ENVS']
-        ), 'batch size must be equal to number of steps * number of envs'
+        # batch_size = config['MINIBATCH_SIZE_BATTERIES'] * config['NUM_MINIBATCHES_BATTERIES']
+        if for_rec_update:
+            batch_size = config['NUM_STEPS_FOR_REC_UPDATE'] * config['NUM_ENVS']
+            num_minibatches = config['NUM_MINIBATCHES_BATTERIES_FOR_REC_UPDATE']
+        else:
+            batch_size = config['NUM_STEPS'] * config['NUM_ENVS']
+            num_minibatches = config['NUM_MINIBATCHES_BATTERIES']
+        # assert (
+        #         batch_size == config['NUM_STEPS'] * config['NUM_ENVS']
+        # ), 'batch size must be equal to number of steps * number of envs'
 
         batch = (traj_batch, advantages, targets)
 
@@ -997,35 +1041,35 @@ def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, 
 
         # jax.debug.print('bef {z}', z=jax.tree.map(lambda l: l.shape, traj_batch), ordered=True)
 
-        if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
-            batch = jax.tree.map(
-                lambda x: jnp.swapaxes(x, 0, 1), batch
-            )
-            batch = jax.tree.map(
-                lambda x: x.reshape((x.shape[0],) + (-1, config['MINIBATCH_SIZE_BATTERIES']) + x.shape[2:]), batch
-            )
-            sequences = jax.tree.map(
-                lambda x: x.reshape((-1,) + x.shape[2:]), batch
-            )
-            permutation = jax.random.permutation(_rng, config['NUM_MINIBATCHES_BATTERIES'])
-            minibatches = jax.tree.map(
-                lambda x: jnp.take(x, permutation, axis=0), sequences
-            )
-        else:
-            permutation = jax.random.permutation(_rng, batch_size)
-            batch = jax.tree.map(
-                lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
-            )
-            shuffled_batch = jax.tree.map(
-                lambda x: jnp.take(x, permutation, axis=0), batch
-            )
-            # jax.debug.print('aft2 {z}', z=jax.tree.map(lambda l: l.shape, shuffled_batch[0]), ordered=True)
-            minibatches = jax.tree.map(
-                lambda x: jnp.reshape(
-                    x, [config['NUM_MINIBATCHES_BATTERIES'], -1] + list(x.shape[1:])
-                ),
-                shuffled_batch,
-            )
+        # if config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic':
+        #     batch = jax.tree.map(
+        #         lambda x: jnp.swapaxes(x, 0, 1), batch
+        #     )
+        #     batch = jax.tree.map(
+        #         lambda x: x.reshape((x.shape[0],) + (-1, config['MINIBATCH_SIZE_BATTERIES']) + x.shape[2:]), batch
+        #     )
+        #     sequences = jax.tree.map(
+        #         lambda x: x.reshape((-1,) + x.shape[2:]), batch
+        #     )
+        #     permutation = jax.random.permutation(_rng, config['NUM_MINIBATCHES_BATTERIES'])
+        #     minibatches = jax.tree.map(
+        #         lambda x: jnp.take(x, permutation, axis=0), sequences
+        #     )
+        # else:
+        permutation = jax.random.permutation(_rng, batch_size)
+        batch = jax.tree.map(
+            lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
+        )
+        shuffled_batch = jax.tree.map(
+            lambda x: jnp.take(x, permutation, axis=0), batch
+        )
+        # jax.debug.print('aft2 {z}', z=jax.tree.map(lambda l: l.shape, shuffled_batch[0]), ordered=True)
+        minibatches = jax.tree.map(
+            lambda x: jnp.reshape(
+                x, (num_minibatches, -1) + x.shape[1:]
+            ),
+            shuffled_batch,
+        )
         # print(jax.tree.map(lambda x: x.shape, minibatches))
         # jax.debug.print('aft3 {z}', z=jax.tree.map(lambda l: l.shape, minibatches[0]), ordered=True)
 
@@ -1050,10 +1094,15 @@ def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, 
 
     # update_state = (runner_state.train_state, traj_batch, advantages, targets, runner_state.rng)
 
+    if for_rec_update:
+        update_epochs = config['UPDATE_EPOCHS_BATTERIES_FOR_REC_UPDATE']
+    else:
+        update_epochs = config['UPDATE_EPOCHS']
+
     scanned_update_epoch = nnx.scan(_update_epoch,
                                     in_axes=nnx.Carry,
                                     out_axes=(nnx.Carry, 0),
-                                    length=config['UPDATE_EPOCHS'])
+                                    length=update_epochs)
 
     update_state, loss_info = scanned_update_epoch(update_state)
 
@@ -1069,129 +1118,143 @@ def update_batteries_network(runner_state: RunnerState, traj_batch, advantages, 
 
     return runner_state, loss_info
 
-def rec_scarce_policy(rec_obs):
-    net_exchange = rec_obs['generations_battery_houses'] - rec_obs['demands_base_battery_houses'] - rec_obs['demands_battery_battery_houses']
-
-    net_exchange_plus = jnp.maximum(net_exchange, 0)
-    net_exchange_minus = -jnp.minimum(net_exchange, 0)
-
-    action_plus = net_exchange_plus / (net_exchange_plus.sum(axis=-1, keepdims=True) + 1e-8)
-    action_minus = net_exchange_minus / (net_exchange_minus.sum(axis=-1, keepdims=True) + 1e-8)
-
-    actions = (rec_obs['network_REC_plus'] > rec_obs['network_REC_minus'])[..., None] * action_minus + (rec_obs['network_REC_plus'] <= rec_obs['network_REC_minus'])[..., None] * action_plus
-
-    actions = jnp.where(actions.sum(axis=-1, keepdims=True) == 0., jnp.ones_like(actions)/actions.shape[-1], actions)
-
-    return actions
-
 def update_rec_network(runner_state:RunnerState, env, config):
 
-    def rec_loss(rec_net, runner_state:RunnerState):
-        runner_state = runner_state._replace(network_rec=rec_net)
+    def update_step(runner_state:RunnerState):
 
-        runner_state, traj_batch, last_val_batteries, last_val_rec = collect_trajectories(runner_state, config, env, True)
+        def rec_loss(rec_net, runner_state:RunnerState):
 
-        advantages, targets = _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config)
+            def thing(runner_state: RunnerState, traj_batch: Transition, advantages, targets):
+                traj_batch, gae, targets = jax.tree.map(
+                    lambda x: x.reshape((config['NUM_STEPS_FOR_REC_UPDATE'] * config['NUM_ENVS'],) + x.shape[2:]),
+                    (traj_batch, advantages, targets)
+                )
 
-        advantages_batteries, _ = advantages
-        targets_batteries, _ = targets
+                network = runner_state.network_rec
 
-        runner_state, total_loss_batteries = update_batteries_network(runner_state, traj_batch,
-                                                                      advantages_batteries, targets_batteries,
-                                                                      config)
+                traj_batch_obs = traj_batch.obs_rec
+                traj_batch_actions = traj_batch.actions_rec
+                traj_batch_values = traj_batch.value_rec
+                traj_batch_log_probs = traj_batch.log_prob_rec
 
-        runner_state, traj_batch, last_val_batteries, last_val_rec = collect_trajectories(runner_state, config, env,
-                                                                                          False)
+                # RERUN NETWORK
+                pi, value = network(traj_batch_obs)
+                log_prob = pi.log_prob(traj_batch_actions + 1e-8)
+                # print(log_prob.shape)
 
-        advantages, targets = _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config)
+                if config['NORMALIZE_TARGETS_REC']:
+                    targets = (targets - targets.mean()) / (targets.std() + 1e-8)
 
-        _, advantages_rec = advantages
-        _, targets_rec = targets
+                # CALCULATE VALUE LOSS
+                value_pred_clipped = traj_batch_values + (
+                        value - traj_batch_values
+                ).clip(-config['CLIP_EPS'], config['CLIP_EPS'])
+                value_losses = jnp.square(value - targets)
+                value_losses_clipped = jnp.square(value_pred_clipped - targets)
+                value_loss = (
+                        0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
+                )
 
-        def thing(runner_state:RunnerState, traj_batch:Transition, advantages, targets):
-            traj_batch, gae, targets = jax.tree.map(
-                lambda x: x.reshape((config['NUM_STEPS'] * config['NUM_ENVS'],) + x.shape[2:]), (traj_batch, advantages, targets)
-            )
+                # CALCULATE ACTOR LOSS
+                ratio = jnp.exp(log_prob - traj_batch_log_probs)
 
-            network = runner_state.network_rec
+                # jax.debug.print('rec ratio mean {x}, max {y}, min {z}, std {w}', x=ratio.mean(), y=ratio.max(),
+                #                 z=ratio.min(), w=ratio.std(), ordered=True)
 
-            traj_batch_obs = traj_batch.obs_rec
-            traj_batch_actions = traj_batch.actions_rec
-            traj_batch_values = traj_batch.value_rec
-            traj_batch_log_probs = traj_batch.log_prob_rec
+                if config['NORMALIZE_ADVANTAGES_REC']:
+                    gae = (gae - gae.mean()) / (gae.std() + 1e-8)
 
-            # RERUN NETWORK
-            pi, value = network(traj_batch_obs)
-            log_prob = pi.log_prob(traj_batch_actions + 1e-8)
-            # print(log_prob.shape)
+                loss_actor1 = ratio * gae
+                loss_actor2 = (
+                        jnp.clip(
+                            ratio,
+                            1.0 - config['CLIP_EPS'],
+                            1.0 + config['CLIP_EPS'],
+                        )
+                        * gae
+                )
+                loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
+                loss_actor = loss_actor.mean()
+                entropy = pi.entropy().mean()
 
-            if config['NORMALIZE_TARGETS_REC']:
-                targets = (targets - targets.mean()) / (targets.std() + 1e-8)
+                total_loss = (
+                        loss_actor
+                        + config['VF_COEF'] * value_loss
+                        - config['ENT_COEF_REC'] * entropy
+                )
 
-            # CALCULATE VALUE LOSS
-            value_pred_clipped = traj_batch_values + (
-                    value - traj_batch_values
-            ).clip(-config['CLIP_EPS'], config['CLIP_EPS'])
-            value_losses = jnp.square(value - targets)
-            value_losses_clipped = jnp.square(value_pred_clipped - targets)
-            value_loss = (
-                    0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
-            )
+                return total_loss
 
-            # CALCULATE ACTOR LOSS
-            ratio = jnp.exp(log_prob - traj_batch_log_probs)
+            runner_state = runner_state._replace(network_rec=rec_net)
 
-            # jax.debug.print('rec ratio mean {x}, max {y}, min {z}, std {w}', x=ratio.mean(), y=ratio.max(),
-            #                 z=ratio.min(), w=ratio.std(), ordered=True)
+            env_state, last_obs_batteries = runner_state.env_state, runner_state.last_obs_batteries
 
-            if config['NORMALIZE_ADVANTAGES_REC']:
-                gae = (gae - gae.mean()) / (gae.std() + 1e-8)
+            runner_state, traj_batch, last_val_batteries, last_val_rec = collect_trajectories(runner_state, config, env, True, config['NUM_STEPS_FOR_REC_UPDATE'])
 
-            loss_actor1 = ratio * gae
-            loss_actor2 = (
-                    jnp.clip(
-                        ratio,
-                        1.0 - config['CLIP_EPS'],
-                        1.0 + config['CLIP_EPS'],
-                    )
-                    * gae
-            )
-            loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
-            loss_actor = loss_actor.mean()
-            entropy = pi.entropy().mean()
+            advantages, targets = _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config)
+            advantages_batteries, _ = advantages
+            targets_batteries, _ = targets
+            update_batteries_network(runner_state, traj_batch, advantages_batteries, targets_batteries, config, for_rec_update=True)
 
-            total_loss = (
-                    loss_actor
-                    + config['VF_COEF'] * value_loss
-                    - config['ENT_COEF_REC'] * entropy
-            )
+            runner_state = runner_state._replace(env_state=env_state, last_obs_batteries=last_obs_batteries)
 
-            return total_loss
+            runner_state, traj_batch, last_val_batteries, last_val_rec = collect_trajectories(runner_state, config, env, False,
+                                                                                config['NUM_STEPS_FOR_REC_UPDATE'])
+
+            advantages, targets = _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config)
+            _, advantages_rec = advantages
+            _, targets_rec = targets
+
+            runner_state.network_rec.train()
+            loss_rec = thing(runner_state, traj_batch, advantages_rec, targets_rec)
+            runner_state.network_rec.eval()
+
+            return loss_rec, runner_state
 
         runner_state.network_rec.train()
-        loss = thing(runner_state, traj_batch, advantages_rec, targets_rec)
+
+        rec_net = runner_state.network_rec
+        opt_rec = runner_state.optimizer_rec
+
+        runner_state = runner_state._replace(network_rec=None, optimizer_rec=None)
+
+        grad_fun = nnx.value_and_grad(rec_loss, has_aux=True)
+
+        val, grad = grad_fun(rec_net, runner_state)
+        loss, runner_state = val
+
+        # jax.debug.print('grad norm: {n}', n=optax.global_norm(grad), ordered=True)
+
+        opt_rec.update(grad)
+
+        runner_state = runner_state._replace(network_rec=rec_net, optimizer_rec=opt_rec)
+
         runner_state.network_rec.eval()
 
-        jax.debug.print('rec loss: {x}', x=loss, ordered=True)
+        return runner_state, loss, optax.global_norm(grad)
 
-        return loss, runner_state
 
-    network_rec = runner_state.network_rec
-    opt_rec = runner_state.optimizer_rec
 
-    grad_fn = nnx.grad(rec_loss, has_aux=True)
+    battery_network_graph, battery_network_state = nnx.split(runner_state.network_batteries)
+    battery_network_for_rec_update = nnx.merge(battery_network_graph, battery_network_state)
+    battery_optimizer_for_rec_update = StackedOptimizer(config['NUM_BATTERY_AGENTS'], battery_network_for_rec_update, optax.chain(optax.clip_by_global_norm(config['MAX_GRAD_NORM']), optax.sgd(learning_rate=config['LR_BATTERIES_FOR_REC_UPDATE'])))
 
-    runner_state = runner_state._replace(network_rec=None, optimizer_rec=None)
+    runner_state_for_rec_update = runner_state._replace(network_batteries=battery_network_for_rec_update,
+                                                        optimizer_batteries=battery_optimizer_for_rec_update)
 
-    grads, runner_state = grad_fn(network_rec, runner_state)
+    scanned_update_step = nnx.scan(update_step,
+                                   in_axes=nnx.Carry,
+                                   out_axes=(nnx.Carry, 0, 0),
+                                   length=config['UPDATE_TIMES_REC'])
 
-    jax.debug.print('grads rec: {n}', n=optax.global_norm(grads), ordered=True)
+    runner_state_for_rec_update, losses, grad_norms = scanned_update_step(runner_state_for_rec_update)
 
-    runner_state = runner_state._replace(optimizer_rec=opt_rec)
+    runner_state = runner_state._replace(network_rec=runner_state_for_rec_update.network_rec,
+                                         optimizer_rec=runner_state_for_rec_update.optimizer_rec)
 
-    runner_state.optimizer_rec.update(grads)
+    jax.debug.print('rec mean loss: {l}, rec mean grad norms: {n}', l=losses.mean(), n=grad_norms.mean(), ordered=True)
 
-    return runner_state
+    return runner_state, losses
 
 
 # @partial(jax.jit, static_argnums=(0, 2, 3, 6))

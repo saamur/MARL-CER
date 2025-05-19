@@ -22,7 +22,7 @@ import algorithms.utils as utils
 from ernestogym.envs_jax.multi_agent.env import RECEnv, EnvState
 from algorithms.networks import StackedActorCritic, StackedRecurrentActorCritic, RECActorCritic, RECRecurrentActorCritic
 
-from algorithms.rec_rule_based_policies import rec_rule_based_policy as rrrrr
+from algorithms.rec_rule_based_policies import rec_rule_based_policy
 
 
 class StackedOptimizer(nnx.Optimizer):
@@ -114,6 +114,11 @@ def make_train(config, env:RECEnv, network_batteries=None):
             raise ValueError("At least one of config['ENT_COEF_BATTERIES'] and config['ENT_COEF'] must be provided")
         config['ENT_COEF_BATTERIES'] = config['ENT_COEF']
 
+    if 'GAMMA_BATTERIES' not in config.keys():
+        if 'GAMMA' not in config.keys():
+            raise ValueError("At least one of config['GAMMA_BATTERIES'] and config['GAMMA'] must be provided")
+        config['GAMMA_BATTERIES'] = config['GAMMA']
+
     config['REC_ACTION_SPACE_SIZE'] = env.action_space(env.rec_agent).shape[0]
     config['REC_OBS_KEYS'] = tuple(env.obs_rec_keys)
     config['NUM_BATTERY_AGENTS'] = env.num_battery_agents
@@ -154,6 +159,11 @@ def make_train(config, env:RECEnv, network_batteries=None):
             raise ValueError("At least one of config['ENT_COEF_REC'] and config['ENT_COEF'] must be provided")
         config['ENT_COEF_REC'] = config['ENT_COEF']
 
+    if 'GAMMA_REC' not in config.keys():
+        if 'GAMMA' not in config.keys():
+            raise ValueError("At least one of config['GAMMA_REC'] and config['GAMMA'] must be provided")
+        config['GAMMA_REC'] = config['GAMMA']
+
     assert (len(env.battery_agents) ==
             config['NUM_RL_AGENTS'] + config['NUM_BATTERY_FIRST_AGENTS'] +
             config['NUM_ONLY_MARKET_AGENTS'] + config['NUM_RANDOM_AGENTS'])
@@ -174,7 +184,7 @@ def make_train(config, env:RECEnv, network_batteries=None):
         if config['LR_SCHEDULE'] == 'linear':
             return optax.schedules.linear_schedule(lr_init, lr_end, tot_steps)
         elif config['LR_SCHEDULE'] == 'cosine':
-            # optax.schedules.cosine_decay_schedule(lr_init, tot_steps, lr_end / lr_init)
+            optax.schedules.cosine_decay_schedule(lr_init, tot_steps, lr_end / lr_init)
             return optax.schedules.warmup_cosine_decay_schedule(0., lr_init, warm_up_steps, tot_steps, lr_end)
         else:
             return lr_init
@@ -629,7 +639,7 @@ def collect_trajectories(runner_state: RunnerState, config, env):
             actions_rec = pi.sample(seed=_rng)
             log_probs_rec = pi.log_prob(actions_rec + 1e-8)
         else:
-            actions_rec = rrrrr(rec_obsv, config['REC_RULE_BASED_NAME'], _rng)
+            actions_rec = rec_rule_based_policy(rec_obsv, config['REC_RULE_BASED_NAME'], _rng)
             log_probs_rec = jnp.zeros((config['NUM_ENVS'],))
             value_rec = jnp.zeros((config['NUM_ENVS'],))
             lstm_act_state_rec, lstm_cri_state_rec = runner_state.last_lstm_state_rec.act_state, runner_state.last_lstm_state_rec.cri_state
@@ -1416,7 +1426,7 @@ def test_networks(env:RECEnv, train_state:TrainState, num_iter, config, rng, cur
                 pi, _, separate_cri = network_rec(rec_obsv, return_separate_cri=True)
             actions_rec = pi.mean()
         else:
-            actions_rec = rrrrr(rec_obsv, config['REC_RULE_BASED_NAME'], _rng)
+            actions_rec = rec_rule_based_policy(rec_obsv, config['REC_RULE_BASED_NAME'], _rng)
 
         actions_second = {agent: jnp.array(0.) for agent in env.battery_agents}
         actions_second[env.rec_agent] = actions_rec

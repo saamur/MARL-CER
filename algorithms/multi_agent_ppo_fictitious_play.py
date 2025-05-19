@@ -110,6 +110,11 @@ def make_train(config, env:RECEnv, network_batteries=None):
             raise ValueError("At least one of config['ENT_COEF_BATTERIES'] and config['ENT_COEF'] must be provided")
         config['ENT_COEF_BATTERIES'] = config['ENT_COEF']
 
+    if 'GAMMA_BATTERIES' not in config.keys():
+        if 'GAMMA' not in config.keys():
+            raise ValueError("At least one of config['GAMMA_BATTERIES'] and config['GAMMA'] must be provided")
+        config['GAMMA_BATTERIES'] = config['GAMMA']
+
     config['REC_ACTION_SPACE_SIZE'] = env.action_space(env.rec_agent).shape[0]
     config['REC_OBS_KEYS'] = tuple(env.obs_rec_keys)
     config['NUM_BATTERY_AGENTS'] = env.num_battery_agents
@@ -149,6 +154,11 @@ def make_train(config, env:RECEnv, network_batteries=None):
         if 'ENT_COEF' not in config.keys():
             raise ValueError("At least one of config['ENT_COEF_REC'] and config['ENT_COEF'] must be provided")
         config['ENT_COEF_REC'] = config['ENT_COEF']
+
+    if 'GAMMA_REC' not in config.keys():
+        if 'GAMMA' not in config.keys():
+            raise ValueError("At least one of config['GAMMA_REC'] and config['GAMMA'] must be provided")
+        config['GAMMA_REC'] = config['GAMMA']
 
     assert (len(env.battery_agents) ==
             config['NUM_RL_AGENTS'] + config['NUM_BATTERY_FIRST_AGENTS'] +
@@ -194,24 +204,72 @@ def make_train(config, env:RECEnv, network_batteries=None):
                                     config['NUM_MINIBATCHES_REC'],
                                     warm_up=config.get('WARMUP_SCHEDULE_REC', 0))
 
-    if config['USE_WEIGHT_DECAY']:
-        tx_bat = optax.chain(
-            optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-            optax.adamw(learning_rate=schedule_batteries, eps=1e-5),
-        )
-        tx_rec = optax.chain(
-            optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-            optax.adamw(learning_rate=schedule_rec, eps=1e-5),
-        )
-    else:
-        tx_bat = optax.chain(
-            optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-            optax.adam(learning_rate=schedule_batteries, eps=1e-5),
-        )
-        tx_rec = optax.chain(
-            optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-            optax.adam(learning_rate=schedule_rec, eps=1e-5),
-        )
+    if 'OPTIMIZER_BATTERIES' not in config.keys():
+        config['OPTIMIZER'] = 'adamw'
+
+    if 'OPTIMIZER_REC' not in config.keys():
+        config['OPTIMIZER'] = 'adamw'
+
+    # def get_optim(scheduler):
+    #     if config['USE_WEIGHT_DECAY']:
+    #         if config['optimizer'] == 'adam':
+    #             return optax.adamw(learning_rate=scheduler, eps=1e-5)
+    #         elif config['optimizer'] == 'sgd':
+    #             return optax.sgd(learning_rate=scheduler)
+    #         elif config['optimizer'] == 'rmsprop':
+    #             return optax.rmsprop(learning_rate=scheduler, momentum=0.9)
+    #         else:
+    #             raise ValueError("Optimizer '{}' not recognized".format(config['optimizer']))
+    #     else:
+    #         if config['optimizer'] == 'adam':
+    #             return optax.adam(learning_rate=scheduler, eps=1e-5)
+    #         elif config['optimizer'] == 'sgd':
+    #             return optax.sgd(learning_rate=scheduler)
+    #         elif config['optimizer'] == 'rmsprop':
+    #             return optax.rmsprop(learning_rate=scheduler, momentum=0.9)
+    #         else:
+    #             raise ValueError("Optimizer '{}' not recognized".format(config['optimizer']))
+
+    def get_optim(name, scheduler):
+        if name == 'adam':
+            return optax.adam(learning_rate=scheduler, eps=1e-5)
+        elif name == 'adamw':
+            return optax.adamw(learning_rate=scheduler, eps=1e-5)
+        elif name == 'sgd':
+            return optax.sgd(learning_rate=scheduler)
+        elif name == 'rmsprop':
+            return optax.rmsprop(learning_rate=scheduler, momentum=0.9)
+        else:
+            raise ValueError("Optimizer '{}' not recognized".format(name))
+
+    tx_bat = optax.chain(
+        optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+        get_optim(config['OPTIMIZER_BATTERIES'], schedule_batteries),
+    )
+    tx_rec = optax.chain(
+        optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+        get_optim(config['OPTIMIZER_REC'], schedule_rec)
+    )
+
+    # if config['USE_WEIGHT_DECAY']:
+    #
+    #     tx_bat = optax.chain(
+    #         optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+    #         optax.adamw(learning_rate=schedule_batteries, eps=1e-5),
+    #     )
+    #     tx_rec = optax.chain(
+    #         optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+    #         optax.adamw(learning_rate=schedule_rec, eps=1e-5),
+    #     )
+    # else:
+    #     tx_bat = optax.chain(
+    #         optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+    #         optax.adam(learning_rate=schedule_batteries, eps=1e-5),
+    #     )
+    #     tx_rec = optax.chain(
+    #         optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+    #         optax.adam(learning_rate=schedule_rec, eps=1e-5),
+    #     )
 
 
     optimizer_batteries = StackedOptimizer(config['NUM_RL_AGENTS'], network_batteries, tx_bat)
@@ -734,15 +792,27 @@ def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_u
 
 def _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config):
 
-    def _get_advantages(gae_and_next_value, transition_data):
+    def _get_advantages_batteries(gae_and_next_value, transition_data):
         gae, next_value = gae_and_next_value
         done, value, rewards = transition_data
 
         # delta = rewards + config['GAMMA'] * next_value * (1 - done) - value
         # gae = (delta + config['GAMMA'] * config['GAE_LAMBDA'] * (1 - done) * gae)
 
-        delta = rewards + config['GAMMA'] * next_value - value
-        gae = (delta + config['GAMMA'] * config['GAE_LAMBDA'] * gae)
+        delta = rewards + config['GAMMA_BATTERIES'] * next_value - value
+        gae = (delta + config['GAMMA_BATTERIES'] * config['GAE_LAMBDA'] * gae)
+
+        return (gae, value), gae
+
+    def _get_advantages_rec(gae_and_next_value, transition_data):
+        gae, next_value = gae_and_next_value
+        done, value, rewards = transition_data
+
+        # delta = rewards + config['GAMMA'] * next_value * (1 - done) - value
+        # gae = (delta + config['GAMMA'] * config['GAE_LAMBDA'] * (1 - done) * gae)
+
+        delta = rewards + config['GAMMA_REC'] * next_value - value
+        gae = (delta + config['GAMMA_REC'] * config['GAE_LAMBDA'] * gae)
 
         return (gae, value), gae
 
@@ -767,7 +837,7 @@ def _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config):
 
     if config['NUM_RL_AGENTS'] > 0:
         _, advantages_batteries = jax.lax.scan(
-            _get_advantages,
+            _get_advantages_batteries,
             (jnp.zeros_like(last_val_batteries), last_val_batteries),
             (traj_batch.done_batteries[..., :config['NUM_RL_AGENTS']], traj_batch.values_batteries[..., :config['NUM_RL_AGENTS']], rewards_batteries),
             reverse=True,
@@ -786,7 +856,7 @@ def _calculate_gae(traj_batch, last_val_batteries, last_val_rec, config):
 
     if not config['USE_REC_RULE_BASED_POLICY']:
         _, advantages_rec = jax.lax.scan(
-            _get_advantages,
+            _get_advantages_rec,
             (jnp.zeros_like(last_val_rec), last_val_rec),
             (traj_batch.done_rec, traj_batch.value_rec, reward_rec),
             reverse=True,

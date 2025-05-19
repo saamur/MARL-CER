@@ -51,7 +51,8 @@ def _get_world(num_battery_houses, demand, generation, ambient_temp, market, add
         'incentivizing_tariff_max_variable': 0.00004,
         'incentivizing_tariff_baseline_variable': 0.00018,
         'fairness_coeff': 0.,
-        'smoothing_factor_rec_actions': 0.99
+        'smoothing_factor_rec_actions': 0.99,
+        'rec_reward_type': 'self_consumption'
     }
 
     world = {
@@ -351,6 +352,7 @@ def parameter_generator(battery_options: dict,
               'incentivizing_tariff_baseline_variable': world_options['incentivizing_tariff_baseline_variable'],
               'fairness_coeff': world_options['fairness_coeff'],
               'smoothing_factor_rec_actions': world_options['smoothing_factor_rec_actions'],
+              'rec_reward_type': world_options.get('rec_reward_type', 'self_consumption'),
               **world_options.get('additional_env_params', {})
 
     }
