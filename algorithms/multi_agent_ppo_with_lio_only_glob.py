@@ -20,7 +20,7 @@ from typing import Sequence, NamedTuple, Any, Union
 from algorithms.wrappers import VecEnvJaxMARL
 
 import algorithms.utils as utils
-from ernestogym.envs_jax.multi_agent.env_only_batteries import RECEnv, EnvState
+from ernestogym.envs.multi_agent.env_only_batteries import RECEnv, EnvState
 from algorithms.networks import StackedActorCritic, StackedRecurrentActorCritic, RECActorCritic, RECRecurrentActorCritic
 from algorithms.networks_lio import StackedIncentiveNetworkPercentage
 

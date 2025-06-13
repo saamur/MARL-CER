@@ -15,7 +15,7 @@ import distrax
 
 from algorithms.normalization_custom import RunningNorm
 import algorithms.utils as utils
-from ernestogym.envs_jax.single_agent.env import  MicroGridEnv
+from ernestogym.envs.single_agent.env import  MicroGridEnv
 
 import algorithms.recurrent_custom as recurrent_custom
 

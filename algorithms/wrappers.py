@@ -5,8 +5,8 @@ import numpy as np
 from flax import struct
 from functools import partial
 from typing import Optional, Tuple, Union, Any
-from ernestogym.envs_jax.base_classes import environment, spaces
-from ernestogym.envs_jax.base_classes.multi_agent_environment import MultiAgentEnv, State
+from ernestogym.envs.base_classes import environment, spaces
+from ernestogym.envs.base_classes.multi_agent_environment import MultiAgentEnv, State
 
 
 class GymnaxWrapper(object):

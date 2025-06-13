@@ -1,0 +1,49 @@
+num_passive_houses: 0
+step: 3600
+
+termination:
+  max_iterations: null
+  min_soh: 0.6
+
+reward:
+  trading_coeff: 1
+  operational_cost_coeff: 0
+  degradation_coeff: 1
+  clip_action_coeff: 1
+  glob_coeff: 1
+
+aging_options:
+  degradation: True
+  fading: False
+
+battery_observations:
+  - demand
+  - generation
+  - temperature
+  - soc
+  - day_of_year
+  - seconds_of_day
+  - selling_price
+  - buying_price
+
+rec_observations:
+  - demands_base_battery_houses
+  - demands_battery_battery_houses
+  - generations_base_battery_houses
+  - mean_demands_base
+  - mean_demands_batteries
+  - mean_generations
+  - day_of_year
+  - seconds_of_day
+  - network_REC_plus
+  - network_REC_minus
+
+use_reward_normalization: False
+valorization_incentive_coeff: 0.000008
+incentivizing_tariff_coeff: 0.00008
+incentivizing_tariff_max_variable: 0.00004
+incentivizing_tariff_baseline_variable: 0.00018
+
+fairness_coeff: 0.
+smoothing_factor_rec_actions: 0.99
+rec_reward_type: 'self_consumption'

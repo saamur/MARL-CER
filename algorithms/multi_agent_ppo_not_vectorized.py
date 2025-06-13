@@ -14,7 +14,7 @@ from typing import Sequence, NamedTuple, Any
 import distrax
 
 import algorithms.utils as utils
-from ernestogym.envs_jax.multi_agent.env import RECEnv
+from ernestogym.envs.multi_agent.env import RECEnv
 from algorithms.ppo import ActorCritic
 
 from .wrappers import (

@@ -1,5 +1,5 @@
 demand:
-  path: "ernestogym/ernesto_jax/data/demand/dataset.csv"
+  path: "ernestogym/ernesto/data/demand/dataset.csv"
   timestep: 60 # seconds
   test_profiles: # column label to use to test the agent
     - "70"
@@ -10,12 +10,12 @@ demand:
   data_usage: "end" # "circular/end"
 
 generation:
-  path: "ernestogym/ernesto_jax/data/generation/pv_dataset.csv"
+  path: "ernestogym/ernesto/data/generation/pv_dataset.csv"
   timestep: 60 # seconds
   data_usage: "end" # "circular/end"
 
 market:
-  path: "ernestogym/ernesto_jax/data/market/ita2010wh.csv"
+  path: "ernestogym/ernesto/data/market/ita2010wh.csv"
   timestep: 3600 # seconds
   data_usage: "end" # "circular/end"
 
@@ -48,7 +48,7 @@ random_data_init: False # timeseries starting point: if True the timeseries star
 seed: 42 # to sample user's demand profile (also initial data and initial battery state if enabled)
 
 termination:
-  max_iterations: null
+  max_iterations: 525600    #CHANGED, WAS null
   min_soh: 0.6
 
 reward:

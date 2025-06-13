@@ -22,7 +22,7 @@ from algorithms.wrappers import VecEnvJaxMARL
 
 from algorithms.normalization_custom import RunningNorm
 import algorithms.utils as utils
-from ernestogym.envs_jax.multi_agent.env import RECEnv, EnvState
+from ernestogym.envs.multi_agent.env import RECEnv, EnvState
 
 
 class StackedOptimizer(nnx.Optimizer):
