@@ -17,7 +17,8 @@ import optax
 from typing import Sequence, NamedTuple, Any, Union
 import distrax
 
-from jaxmarl.wrappers.baselines import JaxMARLWrapper
+# from jaxmarl.wrappers.baselines import JaxMARLWrapper
+from algorithms.wrappers import VecEnvJaxMARL
 
 import algorithms.utils as utils
 from ernestogym.envs_jax.multi_agent.env import RECEnv, EnvState
@@ -46,20 +47,6 @@ class StackedOptimizer(nnx.Optimizer):
             super(StackedOptimizer, self).update(grads, **kwargs)
 
         vmapped_fn(self, grads)
-
-
-class VecEnvJaxMARL(JaxMARLWrapper):
-    """Base class for Gymnax wrappers."""
-
-    def __init__(self, env):
-        super().__init__(env)
-        self.reset = jax.vmap(self._env.reset, in_axes=(0,))
-        self.step = jax.vmap(self._env.step, in_axes=(0, 0, 0))
-
-    # provide proxy access to regular attributes of wrapped object
-    def __getattr__(self, name):
-        return getattr(self._env, name)
-
 
 def make_train(config, env:RECEnv, network_batteries=None):
 
@@ -513,7 +500,7 @@ def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_u
             pi, value_batteries = network_batteries(last_obs_batteries_rl_num_batteries_first)
             lstm_act_state_batteries, lstm_cri_state_batteries = runner_state.last_lstm_state_batteries.act_state, runner_state.last_lstm_state_batteries.cri_state
 
-        actions_batteries_rl = pi.sample(seed=_rng) if for_batteries_update else pi.mean()                        # batteries first
+        actions_batteries_rl = pi.sample(seed=_rng) if (for_batteries_update or not config.get('USE_FICTITIOUS_PLAY', True)) else pi.mean()                        # batteries first
         log_prob_batteries = pi.log_prob(actions_batteries_rl)             # batteries first
 
         value_batteries, actions_batteries_rl, log_prob_batteries = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1),
@@ -1000,10 +987,16 @@ def update_rec_network(runner_state:RunnerState, env, config):
 
     battery_network_graph, battery_network_state = nnx.split(runner_state.network_batteries)
     battery_network_for_rec_update = nnx.merge(battery_network_graph, battery_network_state)
-    battery_optimizer_for_rec_update = StackedOptimizer(config['NUM_BATTERY_AGENTS'],
-                                                        battery_network_for_rec_update,
-                                                        optax.chain(optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-                                                                    optax.sgd(learning_rate=config['LR_BATTERIES_FOR_REC_UPDATE'])))
+
+
+    if config.get('CHANGE_OPTIMIZER_BATTERIES_FOR_REC_UPDATE', True):
+        battery_optimizer_for_rec_update = StackedOptimizer(config['NUM_BATTERY_AGENTS'],
+                                                            battery_network_for_rec_update,
+                                                            optax.chain(optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+                                                                        optax.sgd(learning_rate=config['LR_BATTERIES_FOR_REC_UPDATE'])))
+    else:
+        battery_optimizer_graph, battery_optimizer_state = nnx.split(runner_state.optimizer_batteries)
+        battery_optimizer_for_rec_update = nnx.merge(battery_optimizer_graph, battery_optimizer_state)
 
     runner_state_for_rec_update = runner_state._replace(network_batteries=battery_network_for_rec_update,
                                                         optimizer_batteries=battery_optimizer_for_rec_update)

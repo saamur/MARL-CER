@@ -20,7 +20,7 @@ class Demand:
 
         assert len(demand) * in_timestep >= max_length
 
-        data = change_timestep_array(demand[:np.ceil(max_length / in_timestep).astype(int)], in_timestep, out_timestep, 'sum')
+        data = change_timestep_array(demand[:np.ceil(max_length / in_timestep).astype(int)], in_timestep, out_timestep, 'mean')
 
         return jnp.array(data[:max_length // out_timestep])
 

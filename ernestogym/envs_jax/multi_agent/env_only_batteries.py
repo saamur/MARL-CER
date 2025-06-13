@@ -7,9 +7,13 @@ import numpy as np
 
 import jax
 import jax.numpy as jnp
-from jaxmarl.environments import State
-from jaxmarl.environments.multi_agent_env import MultiAgentEnv
-import jaxmarl.environments.spaces  as spaces
+
+# from jaxmarl.environments import State
+# from jaxmarl.environments.multi_agent_env import MultiAgentEnv
+# import jaxmarl.environments.spaces as spaces
+
+from ernestogym.envs_jax.base_classes.multi_agent_environment import State, MultiAgentEnv
+import ernestogym.envs_jax.base_classes.spaces as spaces
 
 from functools import partial
 

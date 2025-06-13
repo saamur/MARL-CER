@@ -17,7 +17,8 @@ import optax
 from typing import Sequence, NamedTuple, Any, Union
 import distrax
 
-from jaxmarl.wrappers.baselines import JaxMARLWrapper
+# from jaxmarl.wrappers.baselines import JaxMARLWrapper
+from algorithms.wrappers import VecEnvJaxMARL
 
 import algorithms.utils as utils
 from ernestogym.envs_jax.multi_agent.env import RECEnv, EnvState
@@ -44,19 +45,6 @@ class StackedOptimizer(nnx.Optimizer):
             super(StackedOptimizer, self).update(grads, **kwargs)
 
         vmapped_fn(self, grads)
-
-
-class VecEnvJaxMARL(JaxMARLWrapper):
-    """Base class for Gymnax wrappers."""
-
-    def __init__(self, env):
-        super().__init__(env)
-        self.reset = jax.vmap(self._env.reset, in_axes=(0,))
-        self.step = jax.vmap(self._env.step, in_axes=(0, 0, 0))
-
-    # provide proxy access to regular attributes of wrapped object
-    def __getattr__(self, name):
-        return getattr(self._env, name)
 
 
 def make_train(config, env:RECEnv, network_batteries=None):
@@ -173,34 +161,39 @@ def make_train(config, env:RECEnv, network_batteries=None):
     #     env = NormalizeVecObservation(env)
     #     env = NormalizeVecReward(env, config['GAMMA'])
 
-    def schedule_builder(lr_init, lr_end, frac_dynamic, num_updates, num_minibatches, warm_up):
+    def schedule_builder(name, lr_init, lr_end, tot_steps, num_updates, num_minibatches, warm_up):
 
-        tot_steps = int(num_minibatches * config['UPDATE_EPOCHS'] * num_updates * frac_dynamic)
-        warm_up_steps = int(num_minibatches * config['UPDATE_EPOCHS'] * num_updates * warm_up)
+        warm_up_steps = int(tot_steps * warm_up)
 
-        if config['LR_SCHEDULE'] == 'linear':
+        if name == 'linear':
             return optax.schedules.linear_schedule(lr_init, lr_end, tot_steps)
-        elif config['LR_SCHEDULE'] == 'cosine':
-            optax.schedules.cosine_decay_schedule(lr_init, tot_steps, lr_end / lr_init)
+        elif name == 'cosine':
             return optax.schedules.warmup_cosine_decay_schedule(0., lr_init, warm_up_steps, tot_steps, lr_end)
+        elif name == 'exponential':
+            return optax.schedules.exponential_decay(lr_init, config['TRANSITION_STEPS_SCHE'], 0.1, end_value=lr_end)
         else:
             return lr_init
 
     if network_batteries is None:
         _rng = nnx.Rngs(123)
-        network_batteries = utils.construct_battery_net_from_config_multi_agent(config, _rng, num_nets=config['NUM_RL_AGENTS'])
+        network_batteries = utils.construct_battery_net_from_config_multi_agent(config, _rng,
+                                                                                num_nets=config['NUM_RL_AGENTS'])
     _rng = nnx.Rngs(222)
     network_rec = utils.construct_rec_net_from_config_multi_agent(config, _rng)
 
-    schedule_batteries = schedule_builder(config['LR_BATTERIES'],
+    schedule_batteries = schedule_builder(config['LR_SCHEDULE_BATTERIES'],
+                                          config['LR_BATTERIES'],
                                           config['LR_BATTERIES_MIN'],
-                                          config['FRACTION_DYNAMIC_LR_BATTERIES'],
+                                          int(config['NUM_MINIBATCHES_BATTERIES'] * config['UPDATE_EPOCHS'] *
+                                              config['NUM_UPDATES'] *
+                                              config['FRACTION_DYNAMIC_LR_BATTERIES']),
                                           config['NUM_UPDATES'],
                                           config['NUM_MINIBATCHES_BATTERIES'],
                                           warm_up=config.get('WARMUP_SCHEDULE_BATTERIES', 0))
-    schedule_rec = schedule_builder(config['LR_REC'],
+    schedule_rec = schedule_builder(config['LR_SCHEDULE_REC'],
+                                    config['LR_REC'],
                                     config['LR_REC_MIN'],
-                                    config['FRACTION_DYNAMIC_LR_REC'],
+                                    int(config['NUM_UPDATES']),
                                     config['NUM_UPDATES'],
                                     config['NUM_MINIBATCHES_REC'],
                                     warm_up=config.get('WARMUP_SCHEDULE_REC', 0))
@@ -574,11 +567,11 @@ def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_u
             rng_step, env_state, actions_first
         )
 
-        obsv = jax.lax.stop_gradient(obsv)
-        env_state = jax.lax.stop_gradient(env_state)
-        reward_first = jax.lax.stop_gradient(reward_first)
-        done_first = jax.lax.stop_gradient(done_first)
-        info_first = jax.lax.stop_gradient(info_first)
+        # obsv = jax.lax.stop_gradient(obsv)
+        # env_state = jax.lax.stop_gradient(env_state)
+        # reward_first = jax.lax.stop_gradient(reward_first)
+        # done_first = jax.lax.stop_gradient(done_first)
+        # info_first = jax.lax.stop_gradient(info_first)
 
         info_first['actions'] = actions_first
 
@@ -634,10 +627,10 @@ def collect_trajectories(runner_state: RunnerState, config, env, for_batteries_u
             rng_step, env_state, actions_second
         )
 
-        obsv = jax.lax.stop_gradient(obsv)
-        env_state = jax.lax.stop_gradient(env_state)
-        done_second = jax.lax.stop_gradient(done_second)
-        info_second = jax.lax.stop_gradient(info_second)
+        # obsv = jax.lax.stop_gradient(obsv)
+        # env_state = jax.lax.stop_gradient(env_state)
+        # done_second = jax.lax.stop_gradient(done_second)
+        # info_second = jax.lax.stop_gradient(info_second)
 
         info_second['actions'] = actions_second
 

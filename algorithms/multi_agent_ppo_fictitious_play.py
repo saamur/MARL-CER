@@ -16,7 +16,8 @@ import numpy as np
 import optax
 from typing import Sequence, NamedTuple, Any, Union
 
-from jaxmarl.wrappers.baselines import JaxMARLWrapper
+# from jaxmarl.wrappers.baselines import JaxMARLWrapper
+from algorithms.wrappers import VecEnvJaxMARL
 
 import algorithms.utils as utils
 from ernestogym.envs_jax.multi_agent.env import RECEnv, EnvState
@@ -43,19 +44,6 @@ class StackedOptimizer(nnx.Optimizer):
             super(StackedOptimizer, self).update(grads, **kwargs)
 
         vmapped_fn(self, grads)
-
-
-class VecEnvJaxMARL(JaxMARLWrapper):
-    """Base class for Gymnax wrappers."""
-
-    def __init__(self, env):
-        super().__init__(env)
-        self.reset = jax.vmap(self._env.reset, in_axes=(0,))
-        self.step = jax.vmap(self._env.step, in_axes=(0, 0, 0))
-
-    # provide proxy access to regular attributes of wrapped object
-    def __getattr__(self, name):
-        return getattr(self._env, name)
 
 
 def make_train(config, env:RECEnv, network_batteries=None):
@@ -205,30 +193,10 @@ def make_train(config, env:RECEnv, network_batteries=None):
                                     warm_up=config.get('WARMUP_SCHEDULE_REC', 0))
 
     if 'OPTIMIZER_BATTERIES' not in config.keys():
-        config['OPTIMIZER'] = 'adamw'
+        config['OPTIMIZER_BATTERIES'] = 'adamw'
 
     if 'OPTIMIZER_REC' not in config.keys():
-        config['OPTIMIZER'] = 'adamw'
-
-    # def get_optim(scheduler):
-    #     if config['USE_WEIGHT_DECAY']:
-    #         if config['optimizer'] == 'adam':
-    #             return optax.adamw(learning_rate=scheduler, eps=1e-5)
-    #         elif config['optimizer'] == 'sgd':
-    #             return optax.sgd(learning_rate=scheduler)
-    #         elif config['optimizer'] == 'rmsprop':
-    #             return optax.rmsprop(learning_rate=scheduler, momentum=0.9)
-    #         else:
-    #             raise ValueError("Optimizer '{}' not recognized".format(config['optimizer']))
-    #     else:
-    #         if config['optimizer'] == 'adam':
-    #             return optax.adam(learning_rate=scheduler, eps=1e-5)
-    #         elif config['optimizer'] == 'sgd':
-    #             return optax.sgd(learning_rate=scheduler)
-    #         elif config['optimizer'] == 'rmsprop':
-    #             return optax.rmsprop(learning_rate=scheduler, momentum=0.9)
-    #         else:
-    #             raise ValueError("Optimizer '{}' not recognized".format(config['optimizer']))
+        config['OPTIMIZER_REC'] = 'adamw'
 
     def get_optim(name, scheduler):
         if name == 'adam':

@@ -17,7 +17,8 @@ import optax
 from typing import Sequence, NamedTuple, Any
 import distrax
 
-from jaxmarl.wrappers.baselines import JaxMARLWrapper
+# from jaxmarl.wrappers.baselines import JaxMARLWrapper
+from algorithms.wrappers import VecEnvJaxMARL
 
 from algorithms.normalization_custom import RunningNorm
 import algorithms.utils as utils
@@ -44,19 +45,6 @@ class StackedOptimizer(nnx.Optimizer):
             super(StackedOptimizer, self).update(grads, **kwargs)
 
         vmapped_fn(self, grads)
-
-
-class VecEnvJaxMARL(JaxMARLWrapper):
-    """Base class for Gymnax wrappers."""
-
-    def __init__(self, env):
-        super().__init__(env)
-        self.reset = jax.vmap(self._env.reset, in_axes=(0,))
-        self.step = jax.vmap(self._env.step, in_axes=(0, 0, 0))
-
-    # provide proxy access to regular attributes of wrapped object
-    def __getattr__(self, name):
-        return getattr(self._env, name)
 
 
 def make_train(config, env:RECEnv):

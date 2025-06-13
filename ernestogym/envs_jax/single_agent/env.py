@@ -5,9 +5,13 @@ import jax
 import jax.numpy as jnp
 # import numpy as np
 
-from gymnax.environments import environment
-from gymnax.environments import spaces
-from gymnax.environments.environment import TEnvParams, TEnvState
+# from gymnax.environments import environment
+# from gymnax.environments import spaces
+# from gymnax.environments.environment import TEnvParams, TEnvState
+
+import ernestogym.envs_jax.base_classes.environment as environment
+import ernestogym.envs_jax.base_classes.spaces as spaces
+from ernestogym.envs_jax.base_classes.environment import TEnvParams, TEnvState
 
 from ernestogym.ernesto_jax.energy_storage.bess import BessState
 

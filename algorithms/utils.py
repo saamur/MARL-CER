@@ -461,8 +461,6 @@ def restore_state_multi_agent(path):
 
     config = unfreeze(config)
 
-    print(config)
-
     if 'NORMALIZE_NN_INPUTS' not in config.keys():
         config['NORMALIZE_NN_INPUTS'] = False
 

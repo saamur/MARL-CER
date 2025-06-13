@@ -7,9 +7,13 @@ import numpy as np
 
 import jax
 import jax.numpy as jnp
-from jaxmarl.environments import State
-from jaxmarl.environments.multi_agent_env import MultiAgentEnv
-import jaxmarl.environments.spaces  as spaces
+
+# from jaxmarl.environments import State
+# from jaxmarl.environments.multi_agent_env import MultiAgentEnv
+# import jaxmarl.environments.spaces as spaces
+
+from ernestogym.envs_jax.base_classes.multi_agent_environment import State, MultiAgentEnv
+import ernestogym.envs_jax.base_classes.spaces as spaces
 
 from functools import partial
 
@@ -594,7 +598,7 @@ class RECEnv(MultiAgentEnv):
         def batteries_turn():
             temperatures = state.battery_states.thermal_state.temp
             soc = state.battery_states.soc_state.soc
-            balance_plus, balance_minus = self._calc_balances(state, past_shift=self.env_step)
+            balance_plus, balance_minus = self._calc_balances(state)#, past_shift=self.env_step)
 
             obs_array = {}
 
@@ -877,7 +881,9 @@ class RECEnv(MultiAgentEnv):
         demands = self._get_demands(state.demands_battery_houses, new_timeframe)
         generations = self._get_generations(self.generations_battery_houses, new_timeframe)
 
-        to_trade = generations - demands - to_load
+        to_trade = generations - demands - to_load      # W
+        to_trade *= self.env_step                       # Ws
+        to_trade /= self.SECONDS_PER_HOUR               # Wh
 
 
         buying_prices = self._get_buying_prices(self.buying_prices_battery_houses, new_timeframe)

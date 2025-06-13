@@ -16,7 +16,8 @@ import numpy as np
 import optax
 from typing import Sequence, NamedTuple, Any, Union
 
-from jaxmarl.wrappers.baselines import JaxMARLWrapper
+# from jaxmarl.wrappers.baselines import JaxMARLWrapper
+from algorithms.wrappers import VecEnvJaxMARL
 
 import algorithms.utils as utils
 from ernestogym.envs_jax.multi_agent.env import RECEnv, EnvState
@@ -45,19 +46,6 @@ class StackedOptimizer(nnx.Optimizer):
             super(StackedOptimizer, self).update(grads, **kwargs)
 
         vmapped_fn(self, grads)
-
-
-class VecEnvJaxMARL(JaxMARLWrapper):
-    """Base class for Gymnax wrappers."""
-
-    def __init__(self, env):
-        super().__init__(env)
-        self.reset = jax.vmap(self._env.reset, in_axes=(0,))
-        self.step = jax.vmap(self._env.step, in_axes=(0, 0, 0))
-
-    # provide proxy access to regular attributes of wrapped object
-    def __getattr__(self, name):
-        return getattr(self._env, name)
 
 
 def make_train(config, env:RECEnv, network_batteries=None):
@@ -198,24 +186,49 @@ def make_train(config, env:RECEnv, network_batteries=None):
     schedule_batteries = schedule_builder(config['LR_BATTERIES'], config['LR_BATTERIES_MIN'], config['FRACTION_DYNAMIC_LR_BATTERIES'], config['NUM_MINIBATCHES_BATTERIES'], warm_up=config.get('WARMUP_SCHEDULE_BATTERIES', 0))
     schedule_rec = schedule_builder(config['LR_REC'], config['LR_REC_MIN'], config['FRACTION_DYNAMIC_LR_REC'], config['NUM_MINIBATCHES_REC'], warm_up=config.get('WARMUP_SCHEDULE_REC', 0))
 
-    if config['USE_WEIGHT_DECAY']:
-        tx_bat = optax.chain(
-            optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-            optax.adamw(learning_rate=schedule_batteries, eps=1e-5),
-        )
-        tx_rec = optax.chain(
-            optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-            optax.adamw(learning_rate=schedule_rec, eps=1e-5),
-        )
-    else:
-        tx_bat = optax.chain(
-            optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-            optax.adam(learning_rate=schedule_batteries, eps=1e-5),
-        )
-        tx_rec = optax.chain(
-            optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
-            optax.adam(learning_rate=schedule_rec, eps=1e-5),
-        )
+    if 'OPTIMIZER_REC' not in config.keys():
+        config['OPTIMIZER'] = 'adamw'
+
+    def get_optim(name, scheduler):
+        if name == 'adam':
+            return optax.adam(learning_rate=scheduler, eps=1e-5)
+        elif name == 'adamw':
+            return optax.adamw(learning_rate=scheduler, eps=1e-5)
+        elif name == 'sgd':
+            return optax.sgd(learning_rate=scheduler)
+        elif name == 'rmsprop':
+            return optax.rmsprop(learning_rate=scheduler, momentum=0.9)
+        else:
+            raise ValueError("Optimizer '{}' not recognized".format(name))
+
+    tx_bat = optax.chain(
+        optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+        get_optim(config['OPTIMIZER_BATTERIES'], schedule_batteries),
+    )
+    tx_rec = optax.chain(
+        optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+        get_optim(config['OPTIMIZER_REC'], schedule_rec)
+    )
+
+    # if config['USE_WEIGHT_DECAY']:
+    #
+    #     tx_bat = optax.chain(
+    #         optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+    #         optax.adamw(learning_rate=schedule_batteries, eps=1e-5),
+    #     )
+    #     tx_rec = optax.chain(
+    #         optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+    #         optax.adamw(learning_rate=schedule_rec, eps=1e-5),
+    #     )
+    # else:
+    #     tx_bat = optax.chain(
+    #         optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+    #         optax.adam(learning_rate=schedule_batteries, eps=1e-5),
+    #     )
+    #     tx_rec = optax.chain(
+    #         optax.clip_by_global_norm(config['MAX_GRAD_NORM']),
+    #         optax.adam(learning_rate=schedule_rec, eps=1e-5),
+    #     )
 
 
     optimizer_batteries = StackedOptimizer(config['NUM_RL_AGENTS'], network_batteries, tx_bat)
