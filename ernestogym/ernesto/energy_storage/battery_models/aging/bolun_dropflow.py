@@ -16,7 +16,6 @@ class SocStressModel:
     k_soc: float
     soc_ref: float
 
-
 @struct.dataclass
 class TempStressModel:
     k_temp: float
@@ -27,7 +26,6 @@ class DodBolunStressModel:
     k_delta1: float
     k_delta2: float
     k_delta3: float
-
 
 @struct.dataclass
 class BolunDropflowState:
@@ -54,12 +52,10 @@ class BolunDropflowState:
     beta_sei:float
 
 
-
 class BolunDropflowModel:
 
     @classmethod
-    # @partial(jax.jit, static_argnums=[0])
-    def get_init_state(cls, components_setting: Dict, stress_models: Dict, max_length_history=50000, max_length_reversals=10000):
+    def get_init_state(cls, components_setting: Dict, stress_models: Dict, max_length_history=50000, max_length_reversals=10000) -> BolunDropflowState:
 
         dropflow_state = Dropflow.get_init_state(max_length_reversals)
 
@@ -91,11 +87,9 @@ class BolunDropflowModel:
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
-    def compute_soh(cls, state: BolunDropflowState, temp_battery, temp_ambient, soc, elapsed_time, do_check:bool):     #TODO t_ref è temperatura ambiente o un'altra roba?
+    def compute_soh(cls, state: BolunDropflowState, temp_battery, temp_ambient, soc, elapsed_time, do_check:bool):
 
         new_dropflow_state = Dropflow.add_point(state.dropflow_state, soc)
-
-        # jax.debug.print('soc: {x}', x=soc, ordered=True)
 
         new_cum_sum_temp_history = state.cum_sum_temp_history.at[state.n_steps+1].set(state.cum_sum_temp_history[state.n_steps] + temp_battery)
         new_cum_sum_soc_history = state.cum_sum_soc_history.at[state.n_steps + 1].set(state.cum_sum_soc_history[state.n_steps] + soc)
@@ -112,40 +106,12 @@ class BolunDropflowModel:
                                   soc_mean=new_soc_mean)
 
         def check_new_degradation(state: BolunDropflowState):
-            #calendar aging
-            # jax.debug.print('JAX k_temp: {k_temp}, mean_temp: {mean_temp}, temp_ref: {temp_ref}', k_temp=state.temp_stress_model.k_temp,
-            #                 mean_temp=state.temp_battery_mean, temp_ref=state.temp_stress_model.temp_ref, ordered=True)
-            #
-            # jax.debug.print('JAX k_soc: {k_soc}, soc: {soc}, soc_ref: {soc_ref}', k_soc=state.soc_stress_model.k_soc,
-            #                 soc=state.soc_mean, soc_ref=state.soc_stress_model.soc_ref, ordered=True)
-            #
-            # jax.debug.print('JAX k_t: {k_t}, t: {t}', k_t=state.time_stress_model.k_t,
-            #                 t=elapsed_time, ordered=True)
-
-            # soc_mean = state.cum_sum_soc_history[state.n_steps] / state.n_steps
-            # temp_battery_mean = state.cum_sum_temp_history[state.n_steps] / state.n_steps
 
             f_cal = (temperature_stress(state.temp_stress_model.k_temp, state.temp_battery_mean, state.temp_stress_model.temp_ref) *
-                     soc_stress(state.soc_stress_model.k_soc, state.soc_mean, state.soc_stress_model.soc_ref) *  # fixme siamo sicuri che devo usare la media del soc?
+                     soc_stress(state.soc_stress_model.k_soc, state.soc_mean, state.soc_stress_model.soc_ref) *
                      time_stress(state.time_stress_model.k_t, elapsed_time))
 
-            # jax.debug.print('temp: {x}', x=temperature_stress(state.temp_stress_model.k_temp, state.temp_battery_mean, state.temp_stress_model.temp_ref), ordered=True)
-            # jax.debug.print('soc: {x}', x=soc_stress(state.soc_stress_model.k_soc, state.soc_mean, state.soc_stress_model.soc_ref), ordered=True)
-            # jax.debug.print('time: {x}', x=time_stress(state.time_stress_model.k_t, elapsed_time), ordered=True)
-
-
-
-            # jax.debug.print('jax f_cal: {x}', x=f_cal, ordered=True)
-
             new_dropflow_state, rngs, soc_means, counts, i_start, i_end, num_complete_cyc, num_prov_cyc = Dropflow.extract_new_cycles(state.dropflow_state)
-
-            # jax.debug.print('num_complete_cyc: {x}', x=num_complete_cyc, ordered=True)
-            # jax.debug.print('num_prov_cyc: {x}', x=num_prov_cyc, ordered=True)
-
-            # length = len(state.temp_history)
-            # indexes = jnp.arange(length)
-            # mask = jnp.logical_and(indexes[:, None] >= i_start[None, :], indexes[:, None] <= i_end[None, :])
-            # temp_means = jnp.sum(jnp.where(mask, state.temp_history[:, None], 0), axis=0)
 
             temp_means = (state.cum_sum_temp_history[i_end] - state.cum_sum_temp_history[i_start]) / (i_end - i_start)
             soc_means = (state.cum_sum_soc_history[i_end] - state.cum_sum_soc_history[i_start]) / (i_end - i_start)
@@ -159,12 +125,7 @@ class BolunDropflowModel:
                                                                                  num_complete_cyc=num_complete_cyc,
                                                                                  num_prov_cyc=num_prov_cyc)
 
-            # jax.debug.print('jax incomplete_f_cyc: {x}', x=incomplete_f_cyc, ordered=True)
-            # jax.debug.print('jax new_iter_complete_f_cyc: {x}', x=new_iter_complete_f_cyc, ordered=True)
-            # #
             f_d = f_cal + state.f_cyc + new_iter_complete_f_cyc + incomplete_f_cyc
-            # # jax.debug.print('jax prev_complete: {x}', x=state.f_cyc, ordered=True)
-            # jax.debug.print('jax f_d: {x}', x=f_d, ordered=True)
 
             deg = jnp.clip(1 - state.alpha_sei * jnp.exp(-state.beta_sei * f_d) - (1 - state.alpha_sei) * jnp.exp(-f_d), 0, 1)
 
@@ -187,7 +148,6 @@ class BolunDropflowModel:
         new_state = new_state.replace(soh=new_soh)
 
         return new_state, new_soh
-
 
     @classmethod
     @partial(jax.jit, static_argnums=[0])
@@ -216,7 +176,6 @@ def temperature_stress(k_temp, mean_temp, temp_ref):
     :param temp_ref: ambient temperature
     """
     return jnp.exp(k_temp * (mean_temp - temp_ref) * (temp_ref / mean_temp))
-    # return jnp.exp(jnp.float32(k_temp) * (mean_temp - temp_ref) * (temp_ref / mean_temp))
 
 def soc_stress(k_soc, soc, soc_ref):
     """
@@ -238,7 +197,6 @@ def time_stress(k_t, t):
     :param t: current battery age
     """
     return k_t * t
-    # return jnp.float32(k_t) * t
 
 
 def dod_bolun_stress(dod, k_delta1, k_delta2, k_delta3):
@@ -253,4 +211,3 @@ def dod_bolun_stress(dod, k_delta1, k_delta2, k_delta3):
     :param k_delta3: third dod stress coefficient
     """
     return (k_delta1 * dod ** jnp.float32(k_delta2) + k_delta3) ** (-1)
-    # return (jnp.float32(k_delta1) * dod ** jnp.float32(k_delta2) + jnp.float32(k_delta3)) ** (-1)

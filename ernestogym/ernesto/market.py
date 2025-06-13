@@ -85,10 +85,6 @@ class SellingPrice:
         assert len(selling_price) * in_timestep >= max_length
 
         data = change_timestep_array(selling_price[:np.ceil(max_length / in_timestep).astype(int)], in_timestep, out_timestep, 'mean')
-        # data = change_timestep_array(selling_price, in_timestep,
-        #                              out_timestep, 'mean')
-
-        # print(data)
 
         data = jnp.array(data[:max_length // out_timestep])
 

@@ -1,8 +1,8 @@
+from flax import struct
+
 from ernestogym.ernesto.energy_storage.battery_models.electrical.electrical import ElectricalModelState
 from ernestogym.ernesto.energy_storage.battery_models.thermal.thermal import ThermalModelState
 from ernestogym.ernesto.energy_storage.battery_models.soc import SOCModelState
-
-from flax import struct
 
 
 @struct.dataclass

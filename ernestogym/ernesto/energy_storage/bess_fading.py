@@ -1,13 +1,12 @@
-from ernestogym.ernesto.energy_storage.battery_models.electrical.electrical_fading import TheveninFadingModel, ElectricalModelFadingState
-from ernestogym.ernesto.energy_storage.battery_models.thermal.thermal import R2CThermalModel
-from ernestogym.ernesto.energy_storage.battery_models.soc import SOCModel
-from ernestogym.ernesto.energy_storage.bess import BessState
-
 from flax import struct
 from functools import partial
 import jax
 import jax.numpy as jnp
 
+from ernestogym.ernesto.energy_storage.battery_models.electrical.electrical_fading import TheveninFadingModel, ElectricalModelFadingState
+from ernestogym.ernesto.energy_storage.battery_models.thermal.thermal import R2CThermalModel
+from ernestogym.ernesto.energy_storage.battery_models.soc import SOCModel
+from ernestogym.ernesto.energy_storage.bess import BessState
 
 @struct.dataclass
 class BessFadingState(BessState):
@@ -30,17 +29,11 @@ class BatteryEnergyStorageSystem:
         nominal_dod = battery_options['params']['nominal_dod']
         nominal_lifetime = battery_options['params']['nominal_lifetime']
 
-        # nominal_dod ?
-        # nominal_lifetime ?
-        # nominal_voltage ?
-        # nominal_cost ?
         v_max = battery_options['params']['v_max']
         v_min = battery_options['params']['v_min']
         temp_ambient = battery_options['init']['temp_ambient']
-        # soc_min soc_max
+
         sign_convention = battery_options['sign_convention']
-        # _reset_soc_every ?
-        # _check_soh_every ? but not applicable
 
         soc_min = battery_options['bounds']['soc']['low']
         soc_max = battery_options['bounds']['soc']['high']
@@ -103,10 +96,7 @@ class BatteryEnergyStorageSystem:
         new_electrical_state, new_c_max = TheveninFadingModel.compute_parameter_fading(new_electrical_state, state.nominal_capacity)
 
         dissipated_heat = TheveninFadingModel.compute_generated_heat(new_electrical_state, temp=state.thermal_state.temp, soc=state.soc_state.soc)
-
         new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, new_c_max)
-
-
         new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=t_amb, soc=curr_soc, dt=dt)
 
         new_soh = new_c_max / state.nominal_capacity

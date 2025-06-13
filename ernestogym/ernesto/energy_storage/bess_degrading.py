@@ -1,13 +1,13 @@
+from flax import struct
+from functools import partial
+import jax
+import jax.numpy as jnp
+
 from ernestogym.ernesto.energy_storage.battery_models.electrical.electrical import TheveninModel
 from ernestogym.ernesto.energy_storage.battery_models.thermal.thermal import R2CThermalModel
 from ernestogym.ernesto.energy_storage.battery_models.soc import SOCModel
 from ernestogym.ernesto.energy_storage.battery_models.aging.bolun_streamflow import BolunStreamflowModel, BolunStreamflowState
 from ernestogym.ernesto.energy_storage.bess import BessState
-
-from flax import struct
-from functools import partial
-import jax
-import jax.numpy as jnp
 
 
 @struct.dataclass
@@ -31,17 +31,11 @@ class BatteryEnergyStorageSystem:
         nominal_dod = battery_options['params']['nominal_dod']
         nominal_lifetime = battery_options['params']['nominal_lifetime']
 
-        # nominal_dod ?
-        # nominal_lifetime ?
-        # nominal_voltage ?
-        # nominal_cost ?
         v_max = battery_options['params']['v_max']
         v_min = battery_options['params']['v_min']
         temp_ambient = battery_options['init']['temp_ambient']
-        # soc_min soc_max
+
         sign_convention = battery_options['sign_convention']
-        # _reset_soc_every ?
-        # _check_soh_every ? but not applicable
 
         soc_min = battery_options['bounds']['soc']['low']
         soc_max = battery_options['bounds']['soc']['high']
@@ -104,14 +98,11 @@ class BatteryEnergyStorageSystem:
     @partial(jax.jit, static_argnums=[0])
     def step(cls, state: BessBolunStreamflowState, i:float, dt:float, t_amb: float) -> BessBolunStreamflowState:
         new_electrical_state, v_out, _ = TheveninModel.step_current_driven(state.electrical_state, i, dt=dt, temp=state.thermal_state.temp, soc=state.soc_state.soc)
-
         dissipated_heat = TheveninModel.compute_generated_heat(new_electrical_state, temp=state.thermal_state.temp, soc=state.soc_state.soc)
 
         old_soc = state.soc_state.soc
         new_soc_state, curr_soc = SOCModel.compute_soc(state.soc_state, i, dt, state.nominal_capacity)
-
         new_thermal_state, curr_temp = R2CThermalModel.compute_temp(state.thermal_state, q=dissipated_heat, i=i, T_amb=t_amb, soc=curr_soc, dt=dt)
-
         new_aging_state, curr_soh = BolunStreamflowModel.compute_soh(state.aging_state, curr_temp, state.temp_ambient, curr_soc, state.elapsed_time, curr_soc > old_soc)
 
         new_c_max = curr_soh * state.nominal_capacity

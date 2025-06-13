@@ -5,10 +5,13 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from ernestogym.ernesto.energy_storage.battery_models.electrical.electrical import RCState, ElectricalModelState, TheveninModel
+from ernestogym.ernesto.energy_storage.battery_models.electrical.electrical import ElectricalModelState, TheveninModel
+from ernestogym.ernesto.energy_storage.battery_models.electrical.ecm_components.resistor import ResistorData
 
 @struct.dataclass
 class ElectricalModelFadingState(ElectricalModelState):
+    r0_nominal: ResistorData
+
     alpha_fading: float
     beta_fading:float
 
@@ -23,17 +26,17 @@ class TheveninFadingModel(TheveninModel):
                        beta_fading,
                        components: Dict,
                        inits: Dict,
-                       sign_convention: str):
+                       sign_convention: str) -> ElectricalModelFadingState:
 
         state = super().get_init_state(components, inits, sign_convention)
 
         return ElectricalModelFadingState(alpha_fading=alpha_fading,
                                           beta_fading=beta_fading,
                                           q=0.,
-                                          r0_nominal=state.r0_nominal,
+                                          r0_nominal=state.r0,
                                           r0=state.r0,
                                           rc=state.rc,
-                                          ocv_potential=state.ocv_potential,
+                                          ocv_generator=state.ocv_generator,
                                           is_active=state.is_active,
                                           v=state.v,
                                           i=state.i,
@@ -48,7 +51,7 @@ class TheveninFadingModel(TheveninModel):
 
         new_q = state.q + jnp.abs(i_load) * dt / 3600
 
-        new_state = state.replace(q=new_q)
+        new_state = new_state.replace(q=new_q)
 
         return new_state, v, i_load
 

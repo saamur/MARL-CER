@@ -10,16 +10,7 @@ from ernestogym.ernesto.energy_storage.battery_models.electrical.ecm_components.
 from ernestogym.ernesto.energy_storage.battery_models.electrical.ecm_components.ocv_generator import OCVGenerator, OCVData
 
 @struct.dataclass
-class RCState:
-    resistance_nominal: float
-
-    resistance: float
-    capacity: float
-    i_resistance: float
-
-@struct.dataclass
 class ElectricalModelState:
-    r0_nominal: ResistorData
     r0: ResistorData
 
     rc: RCData
@@ -31,14 +22,13 @@ class ElectricalModelState:
     p: float
     v_rc: float
 
-# with fading
 class TheveninModel:
 
     @classmethod
     def get_init_state(cls,
                        components: Dict,
                        inits: Dict,
-                       sign_convention: str):
+                       sign_convention: str) -> ElectricalModelState:
 
         r0_nominal = Resistor.get_initial_state(components['r0'])
 
@@ -46,8 +36,7 @@ class TheveninModel:
 
         ocv_generator = OCVGenerator.get_initial_state(components['v_ocv'])
 
-        return ElectricalModelState(r0_nominal=r0_nominal,
-                                    r0=r0_nominal,
+        return ElectricalModelState(r0=r0_nominal,
                                     rc=rc,
                                     ocv_generator=ocv_generator,
                                     is_active= sign_convention == 'active',
@@ -66,31 +55,16 @@ class TheveninModel:
         v_ocv = OCVGenerator.get_potential(state.ocv_generator, temp, soc)
 
         i_load = jnp.where(state.is_active, i_load, -i_load)
-
         v_r0 = r0 * i_load
 
-        #######################
-
-        # v_rc = (state.v_rc / dt + i_load /c) / (1/dt + 1/ (c*r1))
-
-        # v = v_ocv - v_r0 - v_rc
-        #
-        # i_r1 = v_rc / r1
-
-        ###############################
-
         e = jnp.exp(-dt/(r1*c))
-
-        v_rc = r1 * i_load * (1 - e) + e * state.v_rc          #1/exp * (r1 * i_load * (exp - 1) + state.v_rc)
+        v_rc = r1 * i_load * (1 - e) + e * state.v_rc
 
         v = v_ocv - v_r0 - v_rc
 
         i_r1 = v_rc / r1
 
-        # jax.debug.print('voltage: {v}', v=v, ordered=True)
-
         power = v * i_load
-
         power = jnp.where(state.is_active, power, -power)
 
         new_state = state.replace(v=v, i=i_load, v_rc=v_rc, rc=state.rc.replace(i_resistance=i_r1), p=power)

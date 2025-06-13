@@ -13,7 +13,6 @@ class SOCModelState:
 class SOCModel:
 
     @classmethod
-    # @partial(jax.jit, static_argnums=[0])
     def get_init_state(cls, soc, soc_max, soc_min):
         return SOCModelState(soc=soc, soc_max=soc_max, soc_min=soc_min)
 
@@ -32,7 +31,6 @@ class SOCModel:
         """
         Compute the maximum feasible current of the battery according to the soc.
         """
-        # jax.debug.print('jax: soc {soc}, dt {dt}, c_max {c_max}', soc=soc, dt=dt, c_max=c_max, ordered=True)
         i_max = (state.soc_max - soc) / dt * c_max * 3600       # c_max in Ah
         i_min = (state.soc_min - soc) / dt * c_max * 3600
         return i_max, i_min
