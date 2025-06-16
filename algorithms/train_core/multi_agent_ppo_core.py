@@ -293,52 +293,6 @@ def networks_builder(config, network_batteries=None, network_rec=None, seed=123)
 
     return network_batteries, network_rec
 
-def trainnnn(update_step, runner_state, env:RECEnv, config, network_batteries, optimizer_batteries, network_rec, optimizer_rec,
-                  rng, world_metadata, validate=True, freq_val=None, val_env=None, val_rng=None,
-                  val_num_iters=None, path_saving=None):
-
-    infos = {}
-    val_infos = {}
-
-    dir_name = (datetime.now().strftime('%Y%m%d_%H%M%S') + '/')
-
-    directory = path_saving + dir_name
-
-    def end_update_step(info, i):
-        if len(infos) == 0:
-            # infos = jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES'],)+x.shape), info)
-            infos.update(jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES'],) + x.shape), info))
-
-        info = jax.device_put(info, device=jax.devices('cpu')[0])
-
-        def update(logs, new):
-            logs[i] = new
-
-        jax.tree.map(update, infos, info)
-
-    def update_val_info(val_info, train_state, i):
-        if len(val_infos) == 0:
-            # infos = jax.tree.map(lambda x: np.empty_like(x, shape=(config['NUM_UPDATES'],)+x.shape), info)
-            val_infos.update(
-                jax.tree.map(lambda x: np.empty_like(x, shape=((config['NUM_UPDATES'] - 1) // freq_val + 1,) + x.shape),
-                             val_info))
-
-        def update(logs, new):
-            logs[i] = new
-
-        network_batteries, _, network_rec, _ = nnx.merge(train_state.graph_def, train_state.state)
-
-        val_info = jax.device_put(val_info, device=jax.devices('cpu')[0])
-        jax.tree.map(update, val_infos, val_info)
-
-        utils.save_state_multiagent(directory, network_batteries, network_rec, config, world_metadata, is_checkpoint=True, num_steps=i)
-
-    scanned_update_step = nnx.scan(nnx.jit(update_step),
-                                   in_axes=(nnx.Carry, 0),
-                                   out_axes=nnx.Carry)
-
-    runner_state = scanned_update_step(runner_state, jnp.arange(config['NUM_UPDATES']))
-
 def prepare_runner_state(env: RECEnv, config, network_batteries, optimizer_batteries, network_rec, optimizer_rec, rng):
 
     rng, _rng = jax.random.split(rng)

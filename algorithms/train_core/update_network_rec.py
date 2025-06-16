@@ -5,7 +5,7 @@ from flax import nnx
 import optax
 
 from algorithms.train_core import StackedOptimizer, RunnerState, UpdateState, Transition
-from algorithms.train_core import collect_trajectories, update_batteries_network, calculate_gae_batteries
+from algorithms.train_core import collect_trajectories, update_batteries_network, calculate_gae_batteries, calculate_gae_rec
 
 from algorithms.rec_rule_based_policies import rec_rule_based_policy
 
@@ -113,6 +113,117 @@ def update_rec_network(runner_state:RunnerState, traj_batch:Transition, advantag
 
 
     return runner_state, loss_info
+
+def update_rec_network_lola(runner_state:RunnerState, env, config):
+
+    def rec_loss(rec_net, runner_state:RunnerState):
+        runner_state = runner_state._replace(network_rec=rec_net)
+
+        runner_state, traj_batch, last_val_batteries, _ = collect_trajectories(runner_state, config,
+                                                                               env, config['NUM_STEPS'],
+                                                                               deterministic_batteries=False,
+                                                                               deterministic_rec=True)
+
+        advantages_batteries, targets_batteries = calculate_gae_batteries(traj_batch, last_val_batteries, config)
+
+        runner_state.network_batteries.train()
+        runner_state, total_loss_batteries = update_batteries_network(runner_state, traj_batch,
+                                                                      advantages_batteries, targets_batteries,
+                                                                      config['NUM_MINIBATCHES_BATTERIES'], config['MINIBATCH_SIZE_BATTERIES'],
+                                                                      config['NUM_EPOCHS_BATTERIES'], config)
+        runner_state.network_batteries.eval()
+
+        runner_state, traj_batch, _, last_val_rec = collect_trajectories(runner_state, config,
+                                                                         env, config['NUM_STEPS'],
+                                                                         deterministic_batteries=True,
+                                                                         deterministic_rec=False)
+
+        advantages_rec, targets_rec = calculate_gae_rec(traj_batch, last_val_rec, config)
+
+        def ppo_loss_lola(runner_state:RunnerState, traj_batch:Transition, advantages, targets):
+            traj_batch, gae, targets = jax.tree.map(
+                lambda x: x.reshape((config['NUM_STEPS'] * config['NUM_ENVS'],) + x.shape[2:]), (traj_batch, advantages, targets)
+            )
+
+            network = runner_state.network_rec
+
+            traj_batch_obs = traj_batch.obs_rec
+            traj_batch_actions = traj_batch.actions_rec
+            traj_batch_values = traj_batch.value_rec
+            traj_batch_log_probs = traj_batch.log_prob_rec
+
+            # RERUN NETWORK
+            pi, value = network(traj_batch_obs)
+            log_prob = pi.log_prob(traj_batch_actions + 1e-8)
+            # print(log_prob.shape)
+
+            if config['NORMALIZE_TARGETS_REC']:
+                targets = (targets - targets.mean()) / (targets.std() + 1e-8)
+
+            # CALCULATE VALUE LOSS
+            value_pred_clipped = traj_batch_values + (
+                    value - traj_batch_values
+            ).clip(-config['CLIP_EPS'], config['CLIP_EPS'])
+            value_losses = jnp.square(value - targets)
+            value_losses_clipped = jnp.square(value_pred_clipped - targets)
+            value_loss = (
+                    0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
+            )
+
+            # CALCULATE ACTOR LOSS
+            ratio = jnp.exp(log_prob - traj_batch_log_probs)
+
+            # jax.debug.print('rec ratio mean {x}, max {y}, min {z}, std {w}', x=ratio.mean(), y=ratio.max(),
+            #                 z=ratio.min(), w=ratio.std(), ordered=True)
+
+            if config['NORMALIZE_ADVANTAGES_REC']:
+                gae = (gae - gae.mean()) / (gae.std() + 1e-8)
+
+            loss_actor1 = ratio * gae
+            loss_actor2 = (
+                    jnp.clip(
+                        ratio,
+                        1.0 - config['CLIP_EPS'],
+                        1.0 + config['CLIP_EPS'],
+                    )
+                    * gae
+            )
+            loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
+            loss_actor = loss_actor.mean()
+            entropy = pi.entropy().mean()
+
+            total_loss = (
+                    loss_actor
+                    + config['VF_COEF'] * value_loss
+                    - config['ENT_COEF_REC'] * entropy
+            )
+
+            return total_loss
+
+        runner_state.network_rec.train()
+        loss = ppo_loss_lola(runner_state, traj_batch, advantages_rec, targets_rec)
+        runner_state.network_rec.eval()
+
+        jax.debug.print('rec loss: {x}', x=loss, ordered=True)
+
+        return loss, runner_state
+
+    network_rec = runner_state.network_rec
+    opt_rec = runner_state.optimizer_rec
+
+    grad_fn = nnx.grad(rec_loss, has_aux=True)
+
+    runner_state = runner_state._replace(network_rec=None, optimizer_rec=None)
+
+    grads, runner_state = grad_fn(network_rec, runner_state)
+
+    jax.debug.print('grads rec: {n}', n=optax.global_norm(grads), ordered=True)
+
+    runner_state = runner_state._replace(optimizer_rec=opt_rec)
+
+    runner_state.optimizer_rec.update(grads)
+
+    return runner_state
 
 def update_rec_network_lola_inspired(runner_state:RunnerState, env, config):
 
