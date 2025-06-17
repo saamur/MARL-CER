@@ -27,7 +27,7 @@ def make_train(config: Dict, env:RECEnv, network_batteries=None, network_rec=Non
 
     print('PPO NORMALE')
 
-    config_enhancer(config, env, is_rec_ppo=True)
+    config_enhancer(config, env, is_rec_ppo=not config['USE_REC_RULE_BASED_POLICY'])
 
     if 'NUM_CONSECUTIVE_ITERATIONS_BATTERIES' in config.keys():
         del config['NUM_CONSECUTIVE_ITERATIONS_BATTERIES']

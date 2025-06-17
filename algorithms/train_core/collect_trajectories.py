@@ -70,7 +70,7 @@ def collect_trajectories(runner_state:RunnerState, config, env, num_steps, deter
         )
 
         new_done_prev_batteries = done_batteries[:, :config['NUM_RL_AGENTS']] if (config['NUM_RL_AGENTS']>0 and config['NETWORK_TYPE_BATTERIES'] == 'recurrent_actor_critic') else runner_state.done_prev_batteries
-        new_done_prev_rec = done_rec if config['NETWORK_TYPE_REC'] == 'recurrent_actor_critic' else runner_state.done_prev_rec
+        new_done_prev_rec = done_rec if (not config.get('USE_REC_RULE_BASED_POLICY', False) and config['NETWORK_TYPE_REC'] == 'recurrent_actor_critic') else runner_state.done_prev_rec
 
         runner_state = runner_state._replace(env_state=env_state,
                                              last_obs_batteries=obs_batteries,
