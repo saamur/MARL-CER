@@ -49,7 +49,6 @@ class ActorCritic(nnx.Module):
         self.normalize = normalize
         if normalize:
             print('norm batt')
-            # self.norm_layer = nnx.BatchNorm(num_features=in_features, use_bias=False, use_scale=False, rngs=rngs)
             self.norm_layer_act = RunningNorm(num_features=len(self.obs_keys_act), use_bias=False, use_scale=False, rngs=rngs)
             self.norm_layer_cri = RunningNorm(num_features=len(self.obs_keys_cri), use_bias=False, use_scale=False, rngs=rngs)
 
@@ -521,58 +520,12 @@ class RECActorCritic(nnx.Module):
 
         activation = activation_from_name(activation)
 
-        @nnx.split_rngs(splits=num_battery_agents)
-        @nnx.vmap(in_axes=(None, None, None, None, 0))
-        def stacked_layer(in_features, out_features, kernel_init, bias_init, rngs):
-            return nnx.Linear(in_features, out_features, kernel_init=kernel_init, bias_init=bias_init, rngs=rngs)
-
-        def build_layers(net_arch_before, net_arch, net_arch_after, in_features):
-
-            layers_before = []
-
-            last_len = in_features
-
-            if len(net_arch_before) != 0:
-                net_arch_before = (in_features,) + net_arch_before
-                last_len = net_arch_before[-1]
-
-                for i in range(len(net_arch_before) - 1):
-                    layers_before.append(stacked_layer(net_arch_before[i], net_arch_before[i+1],
-                                                                           kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-                    layers_before.append(activation)
-
-                if len(net_arch) == 0 and len(net_arch_after) == 0:
-                    layers_before.append(stacked_layer(net_arch_before[-1], 1,
-                                                                           kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
-
-            layers = []
-            if len(net_arch) != 0:
-                net_arch = (last_len,) + net_arch
-                last_len = net_arch[-1]
-                for i in range(len(net_arch) - 1):
-                    layers.append(
-                        nnx.Linear(net_arch[i], net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)),
-                                   bias_init=constant(0.), rngs=rngs))
-                    layers.append(activation)
-                if len(net_arch_after) == 0:
-                    layers.append(
-                        nnx.Linear(net_arch[-1], 1, kernel_init=orthogonal(0.01), bias_init=constant(0.),
-                                   rngs=rngs))
-
-            layers_after = []
-            if len(net_arch_after) != 0:
-                net_arch_after = (last_len,) + net_arch_after
-                for i in range(len(net_arch_after) - 1):
-                    layers_after.append(stacked_layer(net_arch_after[i], net_arch_after[i+1],
-                                                                          kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-                    layers_after.append(activation)
-                layers_after.append(stacked_layer(net_arch_after[-1], 1,
-                                                                      kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
-
-            return layers_before, layers, layers_after
-
-        self.act_layers_before, self.act_layers, self.act_layers_after = build_layers(non_shared_net_arch_before, act_net_arch, non_shared_net_arch_after, in_features_act)
-        self.cri_layers_before, self.cri_layers, self.cri_layers_after = build_layers(non_shared_net_arch_before, cri_net_arch, non_shared_net_arch_after, in_features_cri)
+        self.act_layers_before, self.act_layers, self.act_layers_after = build_layers_rec(in_features_act, non_shared_net_arch_before,
+                                                                                          act_net_arch, non_shared_net_arch_after,
+                                                                                          num_battery_agents, activation, rngs)
+        self.cri_layers_before, self.cri_layers, self.cri_layers_after = build_layers_rec(in_features_cri, non_shared_net_arch_before,
+                                                                                          cri_net_arch, non_shared_net_arch_after,
+                                                                                          num_battery_agents, activation, rngs)
 
         self.cri_mixer = nnx.Param(jnp.zeros(self.num_battery_agents))
 
@@ -743,59 +696,9 @@ class RECRecurrentActorCritic(nnx.Module):
             lstm_activation = activation_from_name(lstm_activation)
 
         @nnx.split_rngs(splits=num_battery_agents)
-        @nnx.vmap(in_axes=(None, None, None, None, 0))
-        def stacked_layer(in_features, out_features, kernel_init, bias_init, rngs):
-            return nnx.Linear(in_features, out_features, kernel_init=kernel_init, bias_init=bias_init, rngs=rngs)
-
-        @nnx.split_rngs(splits=num_battery_agents)
         @nnx.vmap(in_axes=(None, None, None, 0))
         def stacked_lstm_layer(in_features, out_features, activation_fn, rngs):
             return nnx.OptimizedLSTMCell(in_features, out_features, activation_fn=activation_fn, rngs=rngs)
-
-        def build_layers(input_size, net_arch_before, net_arch, net_arch_after):
-
-            layers_before = []
-
-            last_len = input_size
-
-            if len(net_arch_before) != 0:
-                net_arch_before = (last_len,) + net_arch_before
-                last_len = net_arch_before[-1]
-
-                for i in range(len(net_arch_before) - 1):
-                    layers_before.append(stacked_layer(net_arch_before[i], net_arch_before[i+1],
-                                                                           kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-                    layers_before.append(activation)
-
-                if len(net_arch) == 0 and len(net_arch_after) == 0:
-                    layers_before.append(stacked_layer(net_arch_before[-1], 1,
-                                                                           kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
-
-            layers = []
-            if len(net_arch) != 0:
-                net_arch = (last_len,) + net_arch
-                last_len = net_arch[-1]
-                for i in range(len(net_arch) - 1):
-                    layers.append(
-                        nnx.Linear(net_arch[i], net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)),
-                                   bias_init=constant(0.), rngs=rngs))
-                    layers.append(activation)
-                if len(net_arch_after) == 0:
-                    layers.append(
-                        nnx.Linear(net_arch[-1], 1, kernel_init=orthogonal(0.01), bias_init=constant(0.),
-                                   rngs=rngs))
-
-            layers_after = []
-            if len(net_arch_after) != 0:
-                net_arch_after = (last_len,) + net_arch_after
-                for i in range(len(net_arch_after) - 1):
-                    layers_after.append(stacked_layer(net_arch_after[i], net_arch_after[i+1],
-                                                                          kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-                    layers_after.append(activation)
-                layers_after.append(stacked_layer(net_arch_after[-1], 1,
-                                                                      kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
-
-            return layers_before, layers, layers_after
 
         lstm_act_net_arch = (self.num_sequences_act,) + tuple(lstm_act_net_arch)
         lstm_cri_net_arch = (self.num_sequences_cri,) + tuple(lstm_cri_net_arch)
@@ -805,26 +708,32 @@ class RECRecurrentActorCritic(nnx.Module):
 
         if share_lstm_batteries:
             for i in range(len(lstm_act_net_arch) - 1):
-                self.lstm_act_layers.append(nnx.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+                self.lstm_act_layers.append(nnx.OptimizedLSTMCell(lstm_act_net_arch[i], lstm_act_net_arch[i+1],
+                                                                  activation_fn=lstm_activation, rngs=rngs))
             for i in range(len(lstm_cri_net_arch) - 1):
-                self.lstm_cri_layers.append(nnx.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+                self.lstm_cri_layers.append(nnx.OptimizedLSTMCell(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1],
+                                                                  activation_fn=lstm_activation, rngs=rngs))
         else:
             for i in range(len(lstm_act_net_arch) - 1):
-                self.lstm_act_layers.append(stacked_lstm_layer(lstm_act_net_arch[i], lstm_act_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+                self.lstm_act_layers.append(stacked_lstm_layer(lstm_act_net_arch[i], lstm_act_net_arch[i+1],
+                                                               activation_fn=lstm_activation, rngs=rngs))
             for i in range(len(lstm_cri_net_arch) - 1):
-                self.lstm_cri_layers.append(stacked_lstm_layer(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1], activation_fn=lstm_activation, rngs=rngs))
+                self.lstm_cri_layers.append(stacked_lstm_layer(lstm_cri_net_arch[i], lstm_cri_net_arch[i+1],
+                                                               activation_fn=lstm_activation, rngs=rngs))
 
         num_non_sequences_act = in_features_act - self.num_sequences_act
         num_non_sequences_cri = in_features_cri - self.num_sequences_cri
 
-        self.act_layers_before, self.act_layers, self.act_layers_after = build_layers(num_non_sequences_act + lstm_act_net_arch[-1],
-                                                                                      non_shared_net_arch_before,
-                                                                                      act_net_arch,
-                                                                                      non_shared_net_arch_after)
-        self.cri_layers_before, self.cri_layers, self.cri_layers_after = build_layers(num_non_sequences_cri + lstm_cri_net_arch[-1],
-                                                                                      non_shared_net_arch_before,
-                                                                                      cri_net_arch,
-                                                                                      non_shared_net_arch_after)
+        self.act_layers_before, self.act_layers, self.act_layers_after = build_layers_rec(num_non_sequences_act + lstm_act_net_arch[-1],
+                                                                                          non_shared_net_arch_before,
+                                                                                          act_net_arch,
+                                                                                          non_shared_net_arch_after,
+                                                                                          num_battery_agents, activation, rngs)
+        self.cri_layers_before, self.cri_layers, self.cri_layers_after = build_layers_rec(num_non_sequences_cri + lstm_cri_net_arch[-1],
+                                                                                          non_shared_net_arch_before,
+                                                                                          cri_net_arch,
+                                                                                          non_shared_net_arch_after,
+                                                                                          num_battery_agents, activation, rngs)
 
         self.cri_mixer = nnx.Param(jnp.zeros(self.num_battery_agents))
 
@@ -1032,57 +941,9 @@ class RECMLP(nnx.Module):
 
         activation = activation_from_name(activation)
 
-        @nnx.split_rngs(splits=num_battery_agents)
-        @nnx.vmap(in_axes=(None, None, None, None, 0))
-        def stacked_layer(in_features, out_features, kernel_init, bias_init, rngs):
-            return nnx.Linear(in_features, out_features, kernel_init=kernel_init, bias_init=bias_init, rngs=rngs)
-
-        def build_layers(net_arch_before, net_arch, net_arch_after, in_features):
-
-            layers_before = []
-
-            last_len = in_features
-
-            if len(net_arch_before) != 0:
-                net_arch_before = (in_features,) + net_arch_before
-                last_len = net_arch_before[-1]
-
-                for i in range(len(net_arch_before) - 1):
-                    layers_before.append(stacked_layer(net_arch_before[i], net_arch_before[i+1],
-                                                                           kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-                    layers_before.append(activation)
-
-                if len(net_arch) == 0 and len(net_arch_after) == 0:
-                    layers_before.append(stacked_layer(net_arch_before[-1], 1,
-                                                                           kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
-
-            layers = []
-            if len(net_arch) != 0:
-                net_arch = (last_len,) + net_arch
-                last_len = net_arch[-1]
-                for i in range(len(net_arch) - 1):
-                    layers.append(
-                        nnx.Linear(net_arch[i], net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)),
-                                   bias_init=constant(0.), rngs=rngs))
-                    layers.append(activation)
-                if len(net_arch_after) == 0:
-                    layers.append(
-                        nnx.Linear(net_arch[-1], 1, kernel_init=orthogonal(0.01), bias_init=constant(0.),
-                                   rngs=rngs))
-
-            layers_after = []
-            if len(net_arch_after) != 0:
-                net_arch_after = (last_len,) + net_arch_after
-                for i in range(len(net_arch_after) - 1):
-                    layers_after.append(stacked_layer(net_arch_after[i], net_arch_after[i+1],
-                                                                          kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
-                    layers_after.append(activation)
-                layers_after.append(stacked_layer(net_arch_after[-1], 1,
-                                                                      kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
-
-            return layers_before, layers, layers_after
-
-        self.layers_before, self.layers, self.layers_after = build_layers(non_shared_net_arch_before, net_arch, non_shared_net_arch_after, in_features)
+        self.layers_before, self.layers, self.layers_after = build_layers_rec(in_features, non_shared_net_arch_before,
+                                                                              net_arch, non_shared_net_arch_after,
+                                                                              num_battery_agents, activation, rngs)
 
         self.activation = activation
 
@@ -1154,3 +1015,57 @@ def activation_from_name(name: str):
         return nnx.elu
     else:
         raise ValueError("'activation' must be 'relu' or 'tanh'")
+
+def build_stacked_layer(num_battery_agents, in_features, out_features, kernel_init, bias_init, rngs):
+    @nnx.split_rngs(splits=num_battery_agents)
+    @nnx.vmap(in_axes=(None, None, None, None, 0))
+    def _stacked_layer(in_features, out_features, kernel_init, bias_init, rngs):
+        return nnx.Linear(in_features, out_features, kernel_init=kernel_init, bias_init=bias_init, rngs=rngs)
+
+    return _stacked_layer(in_features, out_features, kernel_init, bias_init, rngs)
+
+
+def build_layers_rec(input_size, net_arch_before, net_arch, net_arch_after, num_battery_agents, activation, rngs):
+
+    layers_before = []
+
+    last_len = input_size
+
+    if len(net_arch_before) != 0:
+        net_arch_before = (last_len,) + net_arch_before
+        last_len = net_arch_before[-1]
+
+        for i in range(len(net_arch_before) - 1):
+            layers_before.append(build_stacked_layer(num_battery_agents, net_arch_before[i], net_arch_before[i+1],
+                                                     kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+            layers_before.append(activation)
+
+        if len(net_arch) == 0 and len(net_arch_after) == 0:
+            layers_before.append(build_stacked_layer(num_battery_agents, net_arch_before[-1], 1,
+                                                     kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
+
+    layers = []
+    if len(net_arch) != 0:
+        net_arch = (last_len,) + net_arch
+        last_len = net_arch[-1]
+        for i in range(len(net_arch) - 1):
+            layers.append(
+                nnx.Linear(net_arch[i], net_arch[i+1], kernel_init=orthogonal(np.sqrt(2)),
+                           bias_init=constant(0.), rngs=rngs))
+            layers.append(activation)
+        if len(net_arch_after) == 0:
+            layers.append(
+                nnx.Linear(net_arch[-1], 1, kernel_init=orthogonal(0.01), bias_init=constant(0.),
+                           rngs=rngs))
+
+    layers_after = []
+    if len(net_arch_after) != 0:
+        net_arch_after = (last_len,) + net_arch_after
+        for i in range(len(net_arch_after) - 1):
+            layers_after.append(build_stacked_layer(num_battery_agents, net_arch_after[i], net_arch_after[i+1],
+                                                    kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.), rngs=rngs))
+            layers_after.append(activation)
+        layers_after.append(build_stacked_layer(num_battery_agents, net_arch_after[-1], 1,
+                                                kernel_init=orthogonal(0.01), bias_init=constant(0.), rngs=rngs))
+
+    return layers_before, layers, layers_after
