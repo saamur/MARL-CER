@@ -20,12 +20,6 @@ print('a', os.getcwd())
 os.chdir('../../..')
 print('b', os.getcwd())
 
-
-def my_env_creator(params, battery_type, env_type='normal'):
-    if env_type == 'normal':
-        env = RECEnv(params, battery_type)
-    return env
-
 battery_type = 'degrading_dropflow'
 
 def main():
@@ -114,11 +108,11 @@ def main():
     t0 = time.time()
 
     train(env, config, world_metadata, networks_batteries, optimizer_batteries, network_rec, optimizer_rec, rng,
-                  validate=True, freq_val=int(10 * (config['NUM_CONSECUTIVE_ITERATIONS_BATTERIES'] + config['NUM_CONSECUTIVE_ITERATIONS_REC'])/config['NUM_CONSECUTIVE_ITERATIONS_BATTERIES']),
-                  val_env=env_testing,
-                  val_rng=val_rng,
-                  val_num_iters=val_num_iters,
-                  path_saving='trained_agents/')
+          validate=True, freq_val=int(10 * (config['NUM_CONSECUTIVE_ITERATIONS_BATTERIES'] + config['NUM_CONSECUTIVE_ITERATIONS_REC'])/config['NUM_CONSECUTIVE_ITERATIONS_BATTERIES']),
+          val_env=env_testing,
+          val_rng=val_rng,
+          val_num_iters=val_num_iters,
+          path_saving='trained_agents/')
 
     print(f'time: {time.time() - t0:.2f} s')
 

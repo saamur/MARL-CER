@@ -1,6 +1,5 @@
 import os
-
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.2'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1.'
 
 import jax
 jax.config.update('jax_default_matmul_precision', 'float32')
@@ -11,19 +10,18 @@ from flax.core.frozen_dict import freeze, unfreeze
 
 from ernestogym.envs.multi_agent.env import RECEnv
 from ernestogym.envs.multi_agent.utils import get_world_metadata, get_world_metadata_from_template, get_world_data
-from algorithms.multi_agent_ppo import make_train, train
+from algorithms.multi_agent_ppo_lola import make_train, train
 
 import time
 
-print('a', os.getcwd())
-
-os.chdir('../../..')
-print('b', os.getcwd())
+# print('a', os.getcwd())
+#
+# os.chdir('../../..')
+# print('b', os.getcwd())
 
 battery_type = 'degrading_dropflow'
 
 def main():
-
 
     ##############################  1  ##############################
 
@@ -34,6 +32,8 @@ def main():
     total_timesteps = 8760 * num_envs * 200
 
     config = {
+
+        'TRUNCATE_FRACTION': 1.,
 
         'NUM_RL_AGENTS': 3,
         'NUM_BATTERY_FIRST_AGENTS': 0,
@@ -47,21 +47,22 @@ def main():
         'FRACTION_DYNAMIC_LR_BATTERIES': 1.,
         'FRACTION_WARMUP_SCHEDULE_BATTERIES': 0.,
         'OPTIMIZER_BATTERIES': 'adamw',
+        'BETA_ADAM_BATTERIES': 0.9,
 
         'LR_SCHEDULE_REC': 'cosine',
-        'LR_REC': 4e-4,
+        'LR_REC': 1e-1,
         'LR_REC_MIN': 1e-6,
         'FRACTION_DYNAMIC_LR_REC': 1.,
         'FRACTION_WARMUP_SCHEDULE_REC': 0.,
-        'OPTIMIZER_REC': 'adamw',
+        'OPTIMIZER_REC': 'adam',
+        'BETA_ADAM_REC': 0.6,
 
         'NUM_ENVS': num_envs,
         'NUM_STEPS': 8192,
         'TOTAL_TIMESTEPS': total_timesteps,
-        'NUM_EPOCHS': 10,
 
+        'NUM_EPOCHS_BATTERIES': 10,
         'NUM_MINIBATCHES_BATTERIES': 32,
-        'NUM_MINIBATCHES_REC': 32,
         'GAMMA': 0.99,
         'GAE_LAMBDA': 0.98,
         'CLIP_EPS': 0.20,
@@ -85,10 +86,6 @@ def main():
         'NORMALIZE_ADVANTAGES_REC': False,
 
         'NORMALIZE_NN_INPUTS': True,
-        'USE_REC_RULE_BASED_POLICY': True,
-        'REC_RULE_BASED_NAME': 'scarce_resource',
-        # 'AIDED_REC': True,
-        # 'FRACTION_IMITATION_LEARNING': 0.2,
 
     }
 
@@ -105,13 +102,13 @@ def main():
     t0 = time.time()
 
     train(env, config, world_metadata, networks_batteries, optimizer_batteries, network_rec, optimizer_rec, rng,
-          validate=True, freq_val=10,
-          val_env=env_testing,
+          validate=True, freq_val=10, val_env=env_testing,
           val_rng=val_rng,
           val_num_iters=val_num_iters,
           path_saving='trained_agents/')
 
     print(f'time: {time.time() - t0:.2f} s')
+
 
 if __name__ == '__main__':
     main()

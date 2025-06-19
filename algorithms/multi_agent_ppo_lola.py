@@ -51,7 +51,7 @@ def make_train(config, env:RECEnv, network_batteries=None, network_rec=None, see
 
     schedule_rec = schedule_builder(config['LR_SCHEDULE_REC'],
                                     config['LR_REC'],
-                                    config['NUM_ITERATIONS'] * config['UPDATE_TIMES_REC'],
+                                    config['NUM_ITERATIONS'],
                                     lr_end=config.get('LR_REC_MIN', 0.),
                                     frac_dynamic=config.get('FRACTION_DYNAMIC_LR_REC', 1.),
                                     frac_warmup=config.get('WARMUP_SCHEDULE_REC', 0.),
